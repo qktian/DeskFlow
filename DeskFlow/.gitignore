@@ -1,0 +1,33 @@
+# 构建输出
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Bb]uild/
+bld/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+# 发布产物（可随时重新生成）
+publish/
+*.pdb
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.userosscache
+*.sln.docstates
+
+# 测试与临时文件
+[Tt]est[Rr]esult*/
+*.trx
+*.tmp
+Thumbs.db
+desktop.ini

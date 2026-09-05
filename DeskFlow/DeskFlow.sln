@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.Core", "DeskFlow.Core\DeskFlow.Core.csproj", "{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.Shell", "DeskFlow.Shell\DeskFlow.Shell.csproj", "{FF9D4C9F-84BF-4CF4-8E23-B95033BCE258}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.App", "DeskFlow.App\DeskFlow.App.csproj", "{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF9D4C9F-84BF-4CF4-8E23-B95033BCE258}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF9D4C9F-84BF-4CF4-8E23-B95033BCE258}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF9D4C9F-84BF-4CF4-8E23-B95033BCE258}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF9D4C9F-84BF-4CF4-8E23-B95033BCE258}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

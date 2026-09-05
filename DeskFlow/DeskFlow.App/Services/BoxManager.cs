@@ -1,0 +1,510 @@
+using System.IO;
+using System.Windows;
+using DeskFlow.Core.Models;
+using DeskFlow.Core.Services;
+using DeskFlow.Shell;
+
+namespace DeskFlow.App.Services;
+
+/// <summary>
+/// 盒子生命周期与归类调度的中枢：持有配置、管理全部盒子窗口、执行一键整理与实时归类。
+/// </summary>
+public sealed class BoxManager
+{
+    private readonly AppConfig _config;
+    private readonly IconCache _icons = new();
+    private readonly List<BoxWindow> _windows = new();
+    private bool _visible = true;
+
+    public BoxManager(AppConfig config)
+    {
+        _config = config;
+    }
+
+    public AppConfig Config => _config;
+
+    public IconCache Icons => _icons;
+
+    public bool IsVisible => _visible;
+
+    public IReadOnlyList<BoxWindow> Windows => _windows;
+
+    /// <summary>盒子菜单请求打开设置中心。</summary>
+    public event EventHandler? SettingsRequested;
+
+    public void RequestSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>盒子菜单请求新建一个待办组件。</summary>
+    public event EventHandler? TodoCreateRequested;
+
+    public void RequestTodoCreate() => TodoCreateRequested?.Invoke(this, EventArgs.Empty);
+
+    public void Initialize()
+    {
+        if (!_config.General.LayoutInitialized)
+        {
+            AutoLayout();
+            _config.General.LayoutInitialized = true;
+        }
+
+        Rebuild();
+        AssignNewItems(save: false);
+        Save();
+    }
+
+    public void Rebuild()
+    {
+        foreach (var window in _windows.ToList())
+        {
+            window.Close();
+        }
+
+        _windows.Clear();
+
+        foreach (var box in _config.Boxes.OrderBy(b => b.Order).ThenBy(b => b.Name))
+        {
+            var window = new BoxWindow(box, this);
+            window.Show();
+            _windows.Add(window);
+        }
+
+        ApplyVisibility();
+    }
+
+    /// <summary>首次启动时把默认盒子排布到主屏右侧。</summary>
+    public void AutoLayout()
+    {
+        var primary = ScreenHelper.Primary;
+        var area = primary.WorkArea;
+
+        const double boxWidth = 240;
+        const double boxHeight = 300;
+        const double gap = 12;
+
+        var rowsPerColumn = Math.Max(1, (int)((area.Height - 24) / (boxHeight + gap)));
+        var columns = (int)Math.Ceiling(_config.Boxes.Count / (double)rowsPerColumn);
+        var startX = Math.Max(area.Left + 12, area.Right - 12 - (columns * (boxWidth + gap)));
+
+        var index = 0;
+        foreach (var box in _config.Boxes.OrderBy(b => b.Kind == BoxKind.Unclassified).ThenBy(b => b.Name))
+        {
+            var column = index / rowsPerColumn;
+            var row = index % rowsPerColumn;
+
+            box.Width = boxWidth;
+            box.Height = box.Kind == BoxKind.Unclassified ? Math.Min(boxHeight, 220) : boxHeight;
+            box.X = startX + (column * (boxWidth + gap));
+            box.Y = area.Top + 12 + (row * (box.Height + gap));
+            box.ScreenId = primary.Id;
+            index++;
+        }
+    }
+
+    public void ToggleVisible() => SetVisible(!_visible);
+
+    public void SetVisible(bool visible)
+    {
+        _visible = visible;
+        ApplyVisibility();
+    }
+
+    private void ApplyVisibility()
+    {
+        foreach (var window in _windows)
+        {
+            window.Visibility = _visible ? Visibility.Visible : Visibility.Hidden;
+        }
+    }
+
+    /// <summary>一键整理：按规则全量重排（保留手动归类，除非开启强制归类）。</summary>
+    public void OrganizeAll()
+    {
+        var items = DesktopScanner.Scan();
+        var manual = BuildManualAssignments();
+        var excluded = BuildExcludedSet();
+
+        foreach (var box in _config.Boxes)
+        {
+            box.Items.Clear();
+        }
+
+        var pending = items.Where(i => !manual.ContainsKey(i.Path) && !excluded.Contains(i.Path)).ToList();
+        ApplyMapping(RuleEngine.Classify(pending, _config.Rules, _config.Boxes));
+
+        foreach (var (path, boxId) in manual)
+        {
+            if (!File.Exists(path) && !Directory.Exists(path))
+            {
+                continue;
+            }
+
+            _config.Boxes.FirstOrDefault(b => b.Id == boxId)?.Items.Add(path);
+        }
+
+        Prune();
+        Refresh();
+        Save();
+    }
+
+    /// <summary>实时归类：只处理尚未归入任何盒子的新条目。</summary>
+    public void AssignNewItems(bool save = true)
+    {
+        var items = DesktopScanner.Scan();
+        var assigned = new HashSet<string>(
+            _config.Boxes.SelectMany(b => b.Items),
+            StringComparer.OrdinalIgnoreCase);
+        var manual = BuildManualAssignments();
+        var excluded = BuildExcludedSet();
+
+        var pending = items
+            .Where(i => !assigned.Contains(i.Path) && !manual.ContainsKey(i.Path) && !excluded.Contains(i.Path))
+            .ToList();
+
+        if (pending.Count == 0)
+        {
+            Prune();
+            Refresh();
+            if (save)
+            {
+                Save();
+            }
+
+            return;
+        }
+
+        ApplyMapping(RuleEngine.Classify(pending, _config.Rules, _config.Boxes));
+        Prune();
+        Refresh();
+
+        if (save)
+        {
+            Save();
+        }
+    }
+
+    public void Refresh()
+    {
+        foreach (var window in _windows)
+        {
+            window.LoadItems();
+        }
+    }
+
+    /// <summary>设置变更后重新应用盒子样式并刷新条目。</summary>
+    public void ApplyStyles()
+    {
+        foreach (var window in _windows)
+        {
+            window.ApplyModelToWindow();
+            window.LoadItems();
+        }
+    }
+
+    public void Save()
+    {
+        foreach (var window in _windows)
+        {
+            window.SyncToModel();
+        }
+
+        ConfigService.Save(_config);
+    }
+
+    public void AddItemToBox(string boxId, string path, bool manual)
+    {
+        var target = _config.Boxes.FirstOrDefault(b => b.Id == boxId);
+        if (target is null)
+        {
+            return;
+        }
+
+        RemoveItem(path);
+
+        // 手动拖回盒子即视为撤销「移出」，否则下次整理仍会被排除
+        _config.ExcludedPaths.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+
+        target.Items.Add(path);
+        if (manual)
+        {
+            target.ManualItems.Add(path);
+        }
+
+        Refresh();
+        Save();
+    }
+
+    public void RemoveItem(string path)
+    {
+        foreach (var box in _config.Boxes)
+        {
+            box.Items.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+            box.ManualItems.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    /// <summary>
+    /// 把条目移出盒子，并记入排除列表，使其不再被自动归类重新收纳。
+    /// 用户可在设置中心「已排除条目」中恢复。
+    /// </summary>
+    public void RemoveItemFromBox(string boxId, string path)
+    {
+        var box = _config.Boxes.FirstOrDefault(b => b.Id == boxId);
+        if (box is null)
+        {
+            return;
+        }
+
+        box.Items.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+        box.ManualItems.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+
+        if (!IsExcluded(path))
+        {
+            _config.ExcludedPaths.Add(path);
+        }
+
+        Refresh();
+        Save();
+    }
+
+    public bool IsExcluded(string path) =>
+        _config.ExcludedPaths.Contains(path, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>恢复被排除的条目：清除排除标记并重新参与归类。</summary>
+    public void RestoreItem(string path)
+    {
+        _config.ExcludedPaths.RemoveAll(p => p.Equals(path, StringComparison.OrdinalIgnoreCase));
+        AssignNewItems();
+    }
+
+    /// <summary>清空排除列表并重新归类。</summary>
+    public void ClearExcluded()
+    {
+        _config.ExcludedPaths.Clear();
+        AssignNewItems();
+    }
+
+    public void AddBox(string name)
+    {
+        var primary = ScreenHelper.Primary;
+        var box = new BoxModel
+        {
+            Name = name,
+            Order = _config.Boxes.Count,
+            Width = 240,
+            Height = 300,
+            X = Math.Max(primary.WorkArea.Left + 12, primary.WorkArea.Left + 40 + (_config.Boxes.Count % 4) * 252),
+            Y = primary.WorkArea.Top + 40,
+            ScreenId = primary.Id
+        };
+
+        AddBox(box);
+    }
+
+    /// <summary>把已有模型加入配置并立即建窗（供设置回滚等场景复用）。</summary>
+    public void AddBox(BoxModel box)
+    {
+        _config.Boxes.Add(box);
+        Save();
+
+        var window = new BoxWindow(box, this);
+        window.Show();
+        _windows.Add(window);
+        window.LoadItems();
+    }
+
+    public void RemoveBox(BoxModel box, bool save = true)
+    {
+        var window = _windows.FirstOrDefault(w => ReferenceEquals(w.Model, box));
+        if (window is not null)
+        {
+            _windows.Remove(window);
+            window.Close();
+        }
+
+        _config.Rules.RemoveAll(r => r.TargetBoxId == box.Id);
+        _config.Boxes.Remove(box);
+
+        if (save)
+        {
+            Save();
+        }
+    }
+
+    /// <summary>显示器变化时把越界的盒子拉回可视范围。</summary>
+    public void EnsureOnScreen()
+    {
+        var monitors = ScreenHelper.GetMonitors();
+        foreach (var box in _config.Boxes)
+        {
+            var rect = new Rect(box.X, box.Y, box.Width, box.Height);
+            var monitor = monitors.FirstOrDefault(m => m.Id == box.ScreenId) ?? ScreenHelper.Primary;
+            monitor = monitors.FirstOrDefault(m => m.WorkArea.IntersectsWith(rect)) ?? monitor;
+
+            var clamped = ScreenHelper.ClampToMonitor(rect, monitor);
+            box.X = clamped.X;
+            box.Y = clamped.Y;
+            box.Width = clamped.Width;
+            box.Height = clamped.Height;
+            box.ScreenId = monitor.Id;
+        }
+
+        foreach (var window in _windows)
+        {
+            window.ApplyModelToWindow();
+        }
+    }
+
+    // ---------- 手动快照 ----------
+
+    /// <summary>把当前所有盒子的条目归属保存为一份快照。</summary>
+    public BoxSnapshot CreateSnapshot(string? name = null)
+    {
+        var snapshot = new BoxSnapshot
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? $"快照 {DateTime.Now:yyyy-MM-dd HH:mm}" : name.Trim(),
+            CreatedAt = DateTime.Now,
+            Boxes = _config.Boxes.Select(b => new BoxItemsSnapshot
+            {
+                BoxId = b.Id,
+                BoxName = b.Name,
+                Items = new List<string>(b.Items),
+                ManualItems = new List<string>(b.ManualItems)
+            }).ToList(),
+            ExcludedPaths = new List<string>(_config.ExcludedPaths)
+        };
+
+        _config.Snapshots.Add(snapshot);
+        Save();
+        return snapshot;
+    }
+
+    public void DeleteSnapshot(BoxSnapshot snapshot)
+    {
+        _config.Snapshots.Remove(snapshot);
+        Save();
+    }
+
+    /// <summary>
+    /// 按快照恢复盒子的条目归属：
+    /// - 文件 / 目录已不存在的条目直接忽略；
+    /// - 快照中的盒子已被删除时，其条目回到未分类盒；
+    /// - 恢复完成后，桌面上新增的（快照中没有的）文件会按规则重新自动归类。
+    /// </summary>
+    public (int Restored, int Skipped) RestoreSnapshot(BoxSnapshot snapshot)
+    {
+        var unclassified = _config.UnclassifiedBox;
+
+        // 清空现有归属，按快照重建
+        foreach (var box in _config.Boxes)
+        {
+            box.Items.Clear();
+            box.ManualItems.Clear();
+        }
+
+        int restored = 0;
+        int skipped = 0;
+
+        foreach (var snapBox in snapshot.Boxes)
+        {
+            var target = _config.Boxes.FirstOrDefault(b => b.Id == snapBox.BoxId) ?? unclassified;
+            if (target is null)
+            {
+                skipped += snapBox.Items.Count + snapBox.ManualItems.Count;
+                continue;
+            }
+
+            foreach (var path in snapBox.Items)
+            {
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!target.Items.Contains(path, StringComparer.OrdinalIgnoreCase))
+                {
+                    target.Items.Add(path);
+                    restored++;
+                }
+            }
+
+            foreach (var path in snapBox.ManualItems)
+            {
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!target.ManualItems.Contains(path, StringComparer.OrdinalIgnoreCase))
+                {
+                    target.ManualItems.Add(path);
+                }
+            }
+        }
+
+        // 排除列表恢复（过滤已不存在的路径）
+        _config.ExcludedPaths = snapshot.ExcludedPaths
+            .Where(p => File.Exists(p) || Directory.Exists(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Refresh();
+        AssignNewItems();
+        return (restored, skipped);
+    }
+
+    private HashSet<string> BuildExcludedSet() =>
+        new(_config.ExcludedPaths, StringComparer.OrdinalIgnoreCase);
+
+    private Dictionary<string, string> BuildManualAssignments()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_config.General.ForceAutoClassify)
+        {
+            return map;
+        }
+
+        foreach (var box in _config.Boxes)
+        {
+            foreach (var path in box.ManualItems)
+            {
+                map[path] = box.Id;
+            }
+        }
+
+        return map;
+    }
+
+    private void ApplyMapping(Dictionary<string, List<string>> mapping)
+    {
+        foreach (var (boxId, paths) in mapping)
+        {
+            var box = _config.Boxes.FirstOrDefault(b => b.Id == boxId);
+            if (box is null || box.Kind == BoxKind.Portal)
+            {
+                continue;
+            }
+
+            box.Items.AddRange(paths);
+        }
+
+        foreach (var box in _config.Boxes)
+        {
+            box.Items = box.Items.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+    }
+
+    /// <summary>清理已不存在的路径（含排除列表，文件删除后排除标记自然失效）。</summary>
+    private void Prune()
+    {
+        foreach (var box in _config.Boxes)
+        {
+            box.Items.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p));
+            box.ManualItems.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p));
+        }
+
+        _config.ExcludedPaths.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p));
+        _config.ExcludedPaths = _config.ExcludedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+}

@@ -1,0 +1,179 @@
+<Window x:Class="DeskFlow.App.BoxWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="BoxWindow"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        MinWidth="160"
+        MinHeight="34">
+    <Window.Resources>
+        <Style x:Key="TitleButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="Margin" Value="2,0,0,0" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#33FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="Frame"
+            CornerRadius="12"
+            BorderThickness="1"
+            BorderBrush="#26FFFFFF"
+            Background="#33000000"
+            SnapsToDevicePixels="True"
+            MouseEnter="Frame_OnMouseEnter">
+        <Grid x:Name="RootGrid">
+            <Grid.RowDefinitions>
+                <RowDefinition x:Name="TitleRow" Height="30" />
+                <RowDefinition x:Name="ContentRow" Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border x:Name="TitleBar"
+                    Grid.Row="0"
+                    Background="#1A000000"
+                    CornerRadius="12,12,0,0"
+                    MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown"
+                    MouseMove="TitleBar_OnMouseMove"
+                    MouseLeftButtonUp="TitleBar_OnMouseLeftButtonUp"
+                    MouseRightButtonUp="TitleBar_OnMouseRightButtonUp">
+                <Grid>
+                    <TextBlock x:Name="TitleText"
+                               Text="盒子"
+                               Margin="10,0,60,0"
+                               VerticalAlignment="Center"
+                               Foreground="White"
+                               FontSize="13"
+                               TextTrimming="CharacterEllipsis" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,6,0">
+                        <Button x:Name="CollapseButton"
+                                Content="—"
+                                Style="{StaticResource TitleButtonStyle}"
+                                ToolTip="折叠 / 展开"
+                                PreviewMouseLeftButtonUp="CollapseButton_OnClick" />
+                        <Button x:Name="MoreButton"
+                                Content="···"
+                                Style="{StaticResource TitleButtonStyle}"
+                                ToolTip="更多"
+                                PreviewMouseLeftButtonUp="MoreButton_OnClick" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <ScrollViewer x:Name="ItemsScroll"
+                          Grid.Row="1"
+                          Margin="6"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Disabled"
+                          AllowDrop="True"
+                          Drop="ItemsScroll_OnDrop"
+                          DragOver="ItemsScroll_OnDragOver">
+                <ItemsControl x:Name="ItemsHost">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Width="{Binding ItemWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    Height="{Binding ItemHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    Margin="3"
+                                    CornerRadius="8"
+                                    Background="#0FFFFFFF"
+                                    BorderBrush="#14FFFFFF"
+                                    BorderThickness="1"
+                                    Tag="{Binding}"
+                                    PreviewMouseLeftButtonDown="Item_OnPreviewMouseLeftButtonDown"
+                                    PreviewMouseRightButtonUp="Item_OnPreviewMouseRightButtonUp"
+                                    MouseMove="Item_OnMouseMove"
+                                    MouseEnter="Item_OnMouseEnter"
+                                    MouseLeave="Item_OnMouseLeave">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Image Grid.Row="0"
+                                           Source="{Binding Icon}"
+                                           Stretch="None"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Center" />
+                                    <TextBlock Grid.Row="1"
+                                               Text="{Binding Name}"
+                                               ToolTip="{Binding Name}"
+                                               Foreground="White"
+                                               FontSize="11"
+                                               TextAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               TextWrapping="Wrap"
+                                               MaxHeight="30"
+                                               Margin="4,2,4,6">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsNameVisible}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <TextBlock x:Name="EmptyHint"
+                       Grid.Row="1"
+                       Text="把桌面文件拖到这里"
+                       Foreground="#99FFFFFF"
+                       FontSize="12"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       IsHitTestVisible="False" />
+
+            <Thumb x:Name="ThumbTop" Grid.Row="0" Grid.RowSpan="2" Height="5" VerticalAlignment="Top"
+                   HorizontalAlignment="Stretch" Cursor="SizeNS" Opacity="0"
+                   DragDelta="ThumbTop_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
+            <Thumb x:Name="ThumbBottom" Grid.Row="0" Grid.RowSpan="2" Height="5" VerticalAlignment="Bottom"
+                   HorizontalAlignment="Stretch" Cursor="SizeNS" Opacity="0"
+                   DragDelta="ThumbBottom_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
+            <Thumb x:Name="ThumbLeft" Grid.Row="0" Grid.RowSpan="2" Width="5" HorizontalAlignment="Left"
+                   VerticalAlignment="Stretch" Cursor="SizeWE" Opacity="0"
+                   DragDelta="ThumbLeft_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
+            <Thumb x:Name="ThumbRight" Grid.Row="0" Grid.RowSpan="2" Width="5" HorizontalAlignment="Right"
+                   VerticalAlignment="Stretch" Cursor="SizeWE" Opacity="0"
+                   DragDelta="ThumbRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
+            <Thumb x:Name="ThumbBottomRight" Grid.Row="0" Grid.RowSpan="2" Width="14" Height="14"
+                   HorizontalAlignment="Right" VerticalAlignment="Bottom" Cursor="SizeNWSE" Opacity="0"
+                   DragDelta="ThumbBottomRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
+        </Grid>
+    </Border>
+</Window>

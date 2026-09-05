@@ -1,0 +1,75 @@
+## ---- 构建输出 ----
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+publish/
+artifacts/
+[Ll]og/
+[Ll]ogs/
+x64/
+x86/
+bld/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+## ---- Visual Studio / Rider / VS Code ----
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.userprefs
+*.sln.docstates
+*.rsuser
+*.DotSettings.user
+*.sln.iml
+_ReSharper*/
+*.[Rr]e[Ss]harper
+
+## ---- 中间产物 / 调试符号 ----
+*.pdb
+*.ilk
+*.obj
+*.iobj
+*.ipdb
+*.pch
+*.tlog
+*.cache
+*.dbmdl
+*.dbproj.schemaview
+*.jfm
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+*.vspscc
+*.vssscc
+
+## ---- NuGet ----
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+## ---- 工具与本地缓存目录 ----
+.verify/
+.workbuddy/
+.codebuddy/
+BenchmarkDotNet.Artifacts/
+
+## ---- 证书与发布配置（含私钥，勿提交）----
+*.pfx
+*.publishsettings
+
+## ---- 操作系统 ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
