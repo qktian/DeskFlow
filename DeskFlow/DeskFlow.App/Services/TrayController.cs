@@ -37,6 +37,9 @@ public sealed class TrayController : IDisposable
 
     public event EventHandler? ExitRequested;
 
+    /// <summary>托盘菜单请求打开「待办历史」窗口。</summary>
+    public event EventHandler? HistoryRequested;
+
     /// <summary>托盘切换系统桌面图标显隐后，请求宿主重新应用策略（含后台守护）。</summary>
     public event EventHandler? SystemIconsVisibilityChanged;
 
@@ -75,6 +78,9 @@ public sealed class TrayController : IDisposable
                 _todoManager.AddBoard(dialog.InputText.Trim());
             }
         }));
+
+        menu.Items.Add(CreateItem("待办历史…", (_, _) => HistoryRequested?.Invoke(this, EventArgs.Empty)));
+        menu.Items.Add(CreateItem("清空回收站…", (_, _) => RecycleBinActions.ShowEmptyRecycleBinDialog()));
 
         menu.Items.Add(CreateItem("保存桌面快照…", (_, _) =>
         {

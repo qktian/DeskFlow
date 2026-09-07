@@ -81,6 +81,13 @@ public sealed class TodoItemModel
     /// </summary>
     public Dictionary<string, bool> CheckIns { get; set; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// 循环任务的关闭（归档）时间：非空表示该任务已停止循环。
+    /// 已关闭的循环任务不再出现在待办面板，只在「待办历史」中保留，可随时重新开启。
+    /// 普通任务不使用该字段（其终态是 Completed）。
+    /// </summary>
+    public DateTime? ClosedAt { get; set; }
+
     public void Normalize()
     {
         Title = (Title ?? string.Empty).Trim();
@@ -114,6 +121,12 @@ public sealed class TodoBoardModel
 
     public bool Collapsed { get; set; }
 
+    /// <summary>
+    /// 高度随任务数量自适应：开启后窗口高度 = 标题栏 + 所有可见任务行的实际高度，内容不再需要滚动。
+    /// 用户手动拖拽上下边缘调整高度时会自动关闭该项（把控制权交回用户）。
+    /// </summary>
+    public bool AutoHeight { get; set; } = true;
+
     /// <summary>面板外观（背景色 / 透明度 / 圆角 / 文字色），与普通盒子一致，可单独调整。</summary>
     public BoxStyle Style { get; set; } = new()
     {
@@ -130,7 +143,8 @@ public sealed class TodoBoardModel
     {
         Name = string.IsNullOrWhiteSpace(Name) ? "待办事项" : Name.Trim();
         Width = Math.Clamp(Width, 220, 700);
-        Height = Math.Clamp(Height, 200, 1000);
+        // 自适应模式下高度由任务行数决定，允许比手动模式的 200 更矮（76 = 标题栏 32 + 空列表提示 44）
+        Height = Math.Clamp(Height, AutoHeight ? 76 : 200, 1000);
         Style ??= new BoxStyle();
         Style.Opacity = Math.Clamp(Style.Opacity, 0.2, 1.0);
         Style.CornerRadius = Math.Clamp(Style.CornerRadius, 0, 24);

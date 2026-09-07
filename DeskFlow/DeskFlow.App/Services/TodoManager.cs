@@ -24,6 +24,11 @@ public sealed class TodoManager : IDisposable
 
     public bool IsVisible => _visible;
 
+    /// <summary>面板 / 托盘请求打开「待办历史」窗口。</summary>
+    public event EventHandler? HistoryRequested;
+
+    public void RequestHistory() => HistoryRequested?.Invoke(this, EventArgs.Empty);
+
     /// <summary>全局配置（供面板读取「显示已完成 / 时间范围」等筛选设置）。</summary>
     public AppConfig Config => _config;
 

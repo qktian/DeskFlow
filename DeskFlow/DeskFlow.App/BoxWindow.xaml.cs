@@ -788,6 +788,13 @@ public partial class BoxWindow : Window
 
         var menu = new ContextMenu { PlacementTarget = element };
 
+        // 回收站快捷方式：把系统桌面原有的「清空回收站」加回来
+        if (FileOperationService.IsRecycleBinShortcut(vm.Path))
+        {
+            AddMenuItem(menu, "清空回收站…", () => RecycleBinActions.ShowEmptyRecycleBinDialog());
+            menu.Items.Add(new Separator());
+        }
+
         AddMenuItem(menu, "打开", () => FileOperationService.Open(vm.Path));
         AddMenuItem(menu, "在资源管理器中显示", () => FileOperationService.ShowInExplorer(vm.Path));
         AddMenuItem(menu, "复制路径", () => FileOperationService.CopyToClipboard(vm.Path));
@@ -924,6 +931,7 @@ public partial class BoxWindow : Window
         menu.Items.Add(new Separator());
 
         AddMenuItem(menu, "按规则整理全部盒子", () => _manager.OrganizeAll());
+        AddMenuItem(menu, "清空回收站…", () => RecycleBinActions.ShowEmptyRecycleBinDialog());
         AddMenuItem(menu, "新建盒子…", () =>
         {
             var dialog = new InputDialog("新建盒子", "盒子名称", "新建盒子") { Owner = this };

@@ -31,6 +31,7 @@ public partial class TodoBoardWindow : Window
         Deactivated += (_, _) => SetBottomMost();
         LocationChanged += (_, _) => SyncToModel();
         SizeChanged += (_, _) => SyncToModel();
+        Loaded += (_, _) => ScheduleAutoHeight();
 
         ApplyModel();
         Reload();
@@ -43,10 +44,8 @@ public partial class TodoBoardWindow : Window
         Left = _model.X;
         Top = _model.Y;
         Width = Math.Clamp(_model.Width, 220, 700);
-        Height = _model.Collapsed ? TitleBarHeight : Math.Clamp(_model.Height, 200, 1000);
         TitleText.Text = _model.Name;
         SetCollapsedUi(_model.Collapsed);
-        ApplyStyle();
     }
 
     /// <summary>应用面板外观（背景色 / 透明度 / 圆角 / 文字色），与普通盒子同源。</summary>
@@ -111,6 +110,8 @@ public partial class TodoBoardWindow : Window
         EmptyHint.Text = _model.Items.Count == 0
             ? "点击 ＋ 添加第一条待办"
             : "当前筛选下没有待办";
+
+        ScheduleAutoHeight();
     }
 
     private void AppendWithChildren(List<TodoRowViewModel> result, TodoItemModel model, int level)
@@ -141,6 +142,12 @@ public partial class TodoBoardWindow : Window
     /// </summary>
     private bool VisibleNode(TodoItemModel item)
     {
+        // 已关闭（归档）的循环任务只在「待办历史」中保留，不再占用面板
+        if (item.Kind == TodoKind.Recurring && item.ClosedAt is not null)
+        {
+            return false;
+        }
+
         var general = _manager.Config.General;
 
         if (general.ShowCompletedTodos)
@@ -200,12 +207,151 @@ public partial class TodoBoardWindow : Window
 
     private const double TitleBarHeight = 32d;
 
+    // ---------- 高度自适应 ----------
+
+    /// <summary>自适应时列表区的最小高度（空列表提示的占位）。</summary>
+    private const double AutoMinContentHeight = 44d;
+
+    /// <summary>自适应窗口最小高度 = 标题栏 + 空列表占位。</summary>
+    private const double MinAutoHeight = TitleBarHeight + AutoMinContentHeight;
+
+    /// <summary>列表区上下留白（ScrollViewer Margin 4+4 与底部余量）。</summary>
+    private const double AutoContentPadding = 12d;
+
+    /// <summary>单行的上下外边距之和（Margin="0,1,0,3"），ActualHeight 不含 Margin，需要补回。</summary>
+    private const double RowSpacing = 4d;
+
+    /// <summary>容器尚未生成时的单行估算高度，避免首帧高度塌成最小值。</summary>
+    private const double EstimatedRowHeight = 50d;
+
+    /// <summary>自适应生效条件：开启自适应且面板处于展开状态。</summary>
+    private bool AutoHeightEnabled => _model.AutoHeight && !_model.Collapsed;
+
+    /// <summary>展开状态下的目标高度（自适应时先取上次值，随后由任务行实际高度修正）。</summary>
+    private double ExpandedHeight() => _model.AutoHeight
+        ? Math.Clamp(_model.Height, MinAutoHeight, 1000)
+        : Math.Clamp(_model.Height, 200, 1000);
+
+    /// <summary>同步高度下限：自适应模式允许比手动模式更矮。</summary>
+    private void ApplyHeightConstraints() =>
+        MinHeight = _model.Collapsed ? TitleBarHeight : (_model.AutoHeight ? MinAutoHeight : 200);
+
+    /// <summary>等列表完成一次布局后再量高度，否则量到的是旧行。</summary>
+    private void ScheduleAutoHeight()
+    {
+        if (!AutoHeightEnabled)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(
+            new Action(ApplyAutoHeight),
+            System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    /// <summary>按当前可见任务行的实际高度重算窗口高度，并在贴近屏幕下边缘时上移，保证不出屏。</summary>
+    private void ApplyAutoHeight()
+    {
+        if (!AutoHeightEnabled || !IsLoaded)
+        {
+            return;
+        }
+
+        var rows = TodoHost.Items.Count;
+        var content = rows == 0
+            ? AutoMinContentHeight
+            : MeasureRows(rows) + AutoContentPadding;
+        var target = Math.Clamp(TitleBarHeight + content, MinAutoHeight, 1000);
+
+        var monitor = ScreenHelper.FromPoint(new Point(Left + (Width / 2), Top + (Height / 2)));
+        var area = monitor.WorkArea;
+
+        // 上限：屏幕工作区高度（上下各留 12）
+        target = Math.Min(target, Math.Max(MinAutoHeight, area.Height - 24));
+
+        // 向下生长；触底则整体上移，仍放不下时再压缩高度
+        var top = Top;
+        if (top + target > area.Bottom - 12)
+        {
+            top = area.Bottom - 12 - target;
+        }
+
+        if (top < area.Top + 12)
+        {
+            top = area.Top + 12;
+        }
+
+        if (top + target > area.Bottom - 12)
+        {
+            target = Math.Max(MinAutoHeight, area.Bottom - 12 - top);
+        }
+
+        var changed = Math.Abs(Height - target) > 0.5 || Math.Abs(Top - top) > 0.5;
+        Top = top;
+        Height = target;
+        SyncToModel();
+
+        // 任务增删导致的高度 / 位置变化要落盘，否则下次启动会回到旧尺寸
+        if (changed)
+        {
+            _manager.Save();
+        }
+    }
+
+    /// <summary>累加各行容器的实际高度（行高随标题 / 副标题有无而不同，必须实测）。</summary>
+    private double MeasureRows(int rows)
+    {
+        TodoHost.UpdateLayout();
+
+        var total = 0d;
+        var counted = 0;
+        foreach (var item in TodoHost.Items)
+        {
+            if (TodoHost.ItemContainerGenerator.ContainerFromItem(item) is FrameworkElement container)
+            {
+                var height = container.ActualHeight > 0 ? container.ActualHeight : container.DesiredSize.Height;
+                total += height + RowSpacing;
+                counted++;
+            }
+        }
+
+        return counted == 0 ? rows * (EstimatedRowHeight + RowSpacing) : total;
+    }
+
+    /// <summary>
+    /// 切换「高度自适应」：开启时立即按任务数重算；关闭时把当前高度固化并回到手动模式的约束。
+    /// </summary>
+    private void SetAutoHeight(bool enabled, bool keepCurrentHeight = false)
+    {
+        if (_model.AutoHeight == enabled)
+        {
+            return;
+        }
+
+        _model.AutoHeight = enabled;
+        ApplyHeightConstraints();
+
+        if (enabled)
+        {
+            ScheduleAutoHeight();
+            return;
+        }
+
+        // 手动模式下高度下限回到 200：菜单关闭时把当前高度抬到合法区间；
+        // 拖拽场景紧接着就会由 Resize 赋新值，这里保持原高度避免先弹一下。
+        if (!_model.Collapsed && !keepCurrentHeight)
+        {
+            Height = Math.Clamp(Height, 200, 1000);
+            _model.Height = Height;
+        }
+    }
+
     private void SetCollapsedUi(bool collapsed)
     {
         ContentRow.Height = collapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
         TodoScroll.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        Height = collapsed ? TitleBarHeight : Math.Max(200, _model.Height);
-        MinHeight = collapsed ? TitleBarHeight : 200;
+        ApplyHeightConstraints();
+        Height = collapsed ? TitleBarHeight : ExpandedHeight();
         ApplyStyle();
     }
 
@@ -213,6 +359,7 @@ public partial class TodoBoardWindow : Window
     {
         _model.Collapsed = !_model.Collapsed;
         SetCollapsedUi(_model.Collapsed);
+        ScheduleAutoHeight();
         _manager.Save();
     }
 
@@ -240,6 +387,12 @@ public partial class TodoBoardWindow : Window
         if (_model.Collapsed)
         {
             return;
+        }
+
+        // 手动调整高度即视为接管高度控制，自动关闭「高度自适应」（只改宽度不受影响）
+        if (_model.AutoHeight && Math.Abs(deltaHeight) > 0.5)
+        {
+            SetAutoHeight(false, keepCurrentHeight: true);
         }
 
         var newWidth = Math.Clamp(Width + deltaWidth, 220, 700);
@@ -536,7 +689,13 @@ public partial class TodoBoardWindow : Window
             }
         });
         AddMenu(menu, "新建待办组件…", () => _manager.AddBoard());
+        AddMenu(menu, "查看历史任务…", () => _manager.RequestHistory());
         AddMenu(menu, _model.Collapsed ? "展开" : "折叠", () => CollapseButton_OnClick(sender, e));
+        AddCheckedMenu(menu, "高度自适应（按任务数）", _model.AutoHeight, () =>
+        {
+            SetAutoHeight(!_model.AutoHeight);
+            _manager.Save();
+        });
         menu.Items.Add(new Separator());
         AddMenu(menu, "删除此清单", () => RemoveBoard());
         menu.IsOpen = true;
@@ -548,7 +707,13 @@ public partial class TodoBoardWindow : Window
         var menu = new ContextMenu { PlacementTarget = MoreButton };
         AddMenu(menu, "新建任务…", AddTask);
         AddMenu(menu, "外观…", () => OpenAppearance());
+        AddCheckedMenu(menu, "高度自适应（按任务数）", _model.AutoHeight, () =>
+        {
+            SetAutoHeight(!_model.AutoHeight);
+            _manager.Save();
+        });
         AddMenu(menu, "新建待办组件…", () => _manager.AddBoard());
+        AddMenu(menu, "查看历史任务…", () => _manager.RequestHistory());
         menu.Items.Add(new Separator());
         AddMenu(menu, "重命名清单…", () =>
         {
@@ -596,6 +761,13 @@ public partial class TodoBoardWindow : Window
     private static void AddMenu(ContextMenu menu, string header, Action action)
     {
         var item = new MenuItem { Header = header };
+        item.Click += (_, _) => action();
+        menu.Items.Add(item);
+    }
+
+    private static void AddCheckedMenu(ContextMenu menu, string header, bool isChecked, Action action)
+    {
+        var item = new MenuItem { Header = header, IsCheckable = true, IsChecked = isChecked };
         item.Click += (_, _) => action();
         menu.Items.Add(item);
     }

@@ -26,6 +26,7 @@ public partial class App : Application
     private DesktopDoubleClickHook _desktopHook = null!;
     private GlobalHotkeyService _hotkeys = null!;
     private SettingsWindow? _settingsWindow;
+    private TodoHistoryWindow? _historyWindow;
     private DispatcherTimer? _iconGuardTimer;
     private volatile bool _restoreIconsPending;
 
@@ -86,10 +87,12 @@ public partial class App : Application
         _manager.Initialize();
 
         _todoManager = new TodoManager(_config);
+        _todoManager.HistoryRequested += (_, _) => OpenHistory();
         _todoManager.Initialize();
 
         _tray = new TrayController(_manager, _todoManager);
         _tray.SettingsRequested += (_, _) => OpenSettings();
+        _tray.HistoryRequested += (_, _) => OpenHistory();
         _tray.ExitRequested += (_, _) => Shutdown();
         _tray.SystemIconsVisibilityChanged += (_, _) => ApplyDesktopIcons();
 
@@ -303,6 +306,20 @@ public partial class App : Application
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
+    }
+
+    /// <summary>打开「待办历史」：跨清单汇总所有普通 / 循环任务。</summary>
+    private void OpenHistory()
+    {
+        if (_historyWindow is not null)
+        {
+            _historyWindow.Activate();
+            return;
+        }
+
+        _historyWindow = new TodoHistoryWindow(_config, _todoManager);
+        _historyWindow.Closed += (_, _) => _historyWindow = null;
+        _historyWindow.Show();
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
