@@ -9,6 +9,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.Shell", "DeskFlow.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.App", "DeskFlow.App\DeskFlow.App.csproj", "{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{9695913C-3014-4CC5-81A2-28396073D3D3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.Regression", "tests\DeskFlow.Regression\DeskFlow.Regression.csproj", "{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.LayoutRegression", "tests\DeskFlow.LayoutRegression\DeskFlow.LayoutRegression.csproj", "{D1996F63-2D6F-4936-A8E0-93EECA561D74}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +36,17 @@ Global
 		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DDAC50EE-AB5F-40AC-9BB0-C6A5A6730791}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D1996F63-2D6F-4936-A8E0-93EECA561D74}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D1996F63-2D6F-4936-A8E0-93EECA561D74}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D1996F63-2D6F-4936-A8E0-93EECA561D74}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D1996F63-2D6F-4936-A8E0-93EECA561D74}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6} = {9695913C-3014-4CC5-81A2-28396073D3D3}
+		{D1996F63-2D6F-4936-A8E0-93EECA561D74} = {9695913C-3014-4CC5-81A2-28396073D3D3}
 	EndGlobalSection
 EndGlobal

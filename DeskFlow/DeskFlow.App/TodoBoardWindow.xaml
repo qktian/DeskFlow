@@ -181,19 +181,19 @@
             <!-- 缩放手柄 -->
             <Thumb x:Name="ThumbTop" Grid.Row="0" Grid.RowSpan="2" Height="5" VerticalAlignment="Top"
                    HorizontalAlignment="Stretch" Cursor="SizeNS" Opacity="0"
-                   DragDelta="ThumbTop_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" />
+                   DragDelta="ThumbTop_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
             <Thumb x:Name="ThumbBottom" Grid.Row="0" Grid.RowSpan="2" Height="5" VerticalAlignment="Bottom"
                    HorizontalAlignment="Stretch" Cursor="SizeNS" Opacity="0"
-                   DragDelta="ThumbBottom_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" />
+                   DragDelta="ThumbBottom_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
             <Thumb x:Name="ThumbLeft" Grid.Row="0" Grid.RowSpan="2" Width="5" HorizontalAlignment="Left"
                    VerticalAlignment="Stretch" Cursor="SizeWE" Opacity="0"
-                   DragDelta="ThumbLeft_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" />
+                   DragDelta="ThumbLeft_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
             <Thumb x:Name="ThumbRight" Grid.Row="0" Grid.RowSpan="2" Width="5" HorizontalAlignment="Right"
                    VerticalAlignment="Stretch" Cursor="SizeWE" Opacity="0"
-                   DragDelta="ThumbRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" />
+                   DragDelta="ThumbRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
             <Thumb x:Name="ThumbBottomRight" Grid.Row="0" Grid.RowSpan="2" Width="16" Height="16"
                    HorizontalAlignment="Right" VerticalAlignment="Bottom" Cursor="SizeNWSE" Opacity="0"
-                   DragDelta="ThumbBottomRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" />
+                   DragDelta="ThumbBottomRight_OnDragDelta" DragCompleted="Thumb_OnDragCompleted" DragStarted="Thumb_OnDragStarted" />
         </Grid>
     </Border>
 </Window>

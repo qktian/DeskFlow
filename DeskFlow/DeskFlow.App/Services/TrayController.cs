@@ -1,6 +1,9 @@
 using System.Windows.Forms;
 using DeskFlow.App;
 using DeskFlow.Shell;
+using DeskFlow.Core.Services;
+using System.Diagnostics;
+using System.IO;
 
 namespace DeskFlow.App.Services;
 
@@ -11,6 +14,7 @@ public sealed class TrayController : IDisposable
     private readonly TodoManager _todoManager;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _restoreSnapshotItem = new("恢复快照");
+    private readonly ToolStripMenuItem _undoOrganizeItem = new("撤销上次整理");
     private bool _disposed;
 
     public TrayController(BoxManager manager, TodoManager todoManager)
@@ -19,7 +23,7 @@ public sealed class TrayController : IDisposable
         _todoManager = todoManager;
 
         var menu = BuildMenu();
-        menu.Opening += (_, _) => RebuildRestoreSnapshotMenu();
+        menu.Opening += (_, _) => { RebuildRestoreSnapshotMenu(); _undoOrganizeItem.Enabled = _manager.CanUndoOrganize; };
 
         _notifyIcon = new NotifyIcon
         {
@@ -36,9 +40,11 @@ public sealed class TrayController : IDisposable
     public event EventHandler? SettingsRequested;
 
     public event EventHandler? ExitRequested;
+    public event EventHandler? RestoreDesktopRequested;
 
     /// <summary>托盘菜单请求打开「待办历史」窗口。</summary>
     public event EventHandler? HistoryRequested;
+    public event EventHandler? SearchRequested;
 
     /// <summary>托盘切换系统桌面图标显隐后，请求宿主重新应用策略（含后台守护）。</summary>
     public event EventHandler? SystemIconsVisibilityChanged;
@@ -61,6 +67,9 @@ public sealed class TrayController : IDisposable
             SystemIconsVisibilityChanged?.Invoke(this, EventArgs.Empty);
         }));
         menu.Items.Add(CreateItem("一键整理桌面", (_, _) => _manager.OrganizeAll()));
+        _undoOrganizeItem.Click += (_, _) => _manager.UndoOrganize();
+        menu.Items.Add(_undoOrganizeItem);
+        menu.Items.Add(CreateItem("搜索已收纳条目…", (_, _) => SearchRequested?.Invoke(this, EventArgs.Empty)));
         menu.Items.Add(CreateItem("新建盒子…", (_, _) =>
         {
             var dialog = new InputDialog("新建盒子", "盒子名称", "新建盒子");
@@ -93,6 +102,22 @@ public sealed class TrayController : IDisposable
         menu.Items.Add(_restoreSnapshotItem);
 
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(CreateItem("恢复系统桌面图标", (_, _) => RestoreDesktopRequested?.Invoke(this, EventArgs.Empty)));
+        menu.Items.Add(CreateItem("打开诊断日志", (_, _) =>
+        {
+            try
+            {
+                Directory.CreateDirectory(DiagnosticLog.Current.DirectoryPath);
+                var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                start.ArgumentList.Add(DiagnosticLog.Current.DirectoryPath);
+                Process.Start(start);
+            }
+            catch (Exception error)
+            {
+                DiagnosticLog.Error("Diagnostics", "Cannot open log directory", error);
+                ShowBalloon("无法打开日志目录", DiagnosticLog.Current.DirectoryPath);
+            }
+        }));
         menu.Items.Add(CreateItem("设置…", (_, _) => OpenSettings()));
         menu.Items.Add(CreateItem("退出", (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty)));
 

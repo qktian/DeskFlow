@@ -57,9 +57,15 @@
 
                         <CheckBox x:Name="EdgeRollCheckBox" Content="盒子贴近屏幕左右边缘时自动卷起" Style="{StaticResource OptionStyle}" />
 
-                        <CheckBox x:Name="SnapCheckBox" Content="拖动盒子时自动吸附屏幕边缘" Style="{StaticResource OptionStyle}" />
+                        <CheckBox x:Name="SnapCheckBox" Content="拖动或缩放盒子、待办时吸附屏幕边缘" Style="{StaticResource OptionStyle}" />
 
-                        <CheckBox x:Name="SnapBoxesCheckBox" Content="拖动盒子时自动对齐其他盒子" Style="{StaticResource OptionStyle}" />
+                        <CheckBox x:Name="SnapBoxesCheckBox" Content="拖动或缩放时，盒子与待办相互对齐" Style="{StaticResource OptionStyle}" />
+
+                        <DockPanel Margin="0,5">
+                            <TextBlock Text="新盒子与恢复窗口的首选屏幕" Style="{StaticResource FieldLabelStyle}" DockPanel.Dock="Left" Margin="0,0,10,0" />
+                            <ComboBox x:Name="PreferredMonitorBox" MinWidth="230" Height="28" />
+                        </DockPanel>
+                        <TextBlock Text="窗口保存为显示器内的相对位置；移除显示器后会回收到首选屏幕。" Style="{StaticResource HintStyle}" />
 
                         <TextBlock Text="待办组件" Style="{StaticResource SectionTitleStyle}" />
                         <CheckBox x:Name="ShowCompletedTodosCheckBox" Content="在待办面板中显示已完成的任务" Style="{StaticResource OptionStyle}" />
@@ -99,6 +105,7 @@
                             <Button Content="立即一键整理" Width="120" Height="30" Click="OrganizeButton_OnClick" />
                             <Button Content="重新排布盒子" Width="120" Height="30" Margin="8,0,0,0" Click="RelayoutButton_OnClick" />
                             <Button Content="恢复系统桌面图标" Width="140" Height="30" Margin="8,0,0,0" Click="RestoreIconsButton_OnClick" />
+                            <Button Content="清理一年以前的历史…" Width="155" Height="30" Margin="8,0,0,0" Click="PruneHistoryButton_OnClick" />
                         </StackPanel>
 
                         <TextBlock Text="快照" Style="{StaticResource SectionTitleStyle}" />
@@ -203,9 +210,11 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <ListView x:Name="RuleList" Grid.Row="0">
+                    <ListView x:Name="RuleList" Grid.Row="0" SelectionChanged="RuleList_OnSelectionChanged">
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Header="启用" Width="46">
@@ -224,6 +233,7 @@
 
                     <Border Grid.Row="1" Margin="0,10,0,0" Padding="10" Background="#FFFFFF" BorderBrush="#D3D1C7" BorderThickness="1" CornerRadius="8">
                         <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="104" />
@@ -248,13 +258,20 @@
                             <TextBlock Grid.Column="6" Text="归入" Style="{StaticResource FieldLabelStyle}" Margin="10,0,6,0" />
                             <ComboBox x:Name="RuleTargetBox" Grid.Column="7" Height="28" />
 
-                            <Button Grid.Column="8" Content="添加规则" Width="82" Height="28" Margin="10,0,0,0" Click="AddRuleButton_OnClick" />
+                            <Button Grid.Column="8" Content="保存规则" Width="82" Height="28" Margin="10,0,0,0" Click="AddRuleButton_OnClick" />
+                            <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Text="名称关键词" Margin="0,8,6,0" VerticalAlignment="Center" />
+                            <TextBox x:Name="RuleKeywordsBox" Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="6" Height="28" Margin="0,8,0,0" Padding="6,0" VerticalContentAlignment="Center" ToolTip="多个关键词用逗号分隔，命中任意一个" />
                         </Grid>
                     </Border>
 
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,68,0,0">
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                        <Button Content="新建" Width="64" Height="28" Click="NewRuleButton_OnClick" />
+                        <Button Content="上移" Width="64" Height="28" Margin="8,0,0,0" Click="MoveRuleUpButton_OnClick" />
+                        <Button Content="下移" Width="64" Height="28" Margin="8,0,0,0" Click="MoveRuleDownButton_OnClick" />
+                        <Button Content="预览归类" Width="88" Height="28" Margin="8,0,0,0" Click="PreviewRulesButton_OnClick" />
                         <Button Content="删除选中规则" Width="120" Height="28" Click="DeleteRuleButton_OnClick" />
                     </StackPanel>
+                    <TextBox x:Name="RulePreviewText" Grid.Row="3" Height="100" Margin="0,8,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
                 </Grid>
             </TabItem>
 
@@ -303,6 +320,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                         <Button Content="打开配置目录" Width="120" Height="28" Click="OpenConfigFolder_OnClick" />
                         <Button Content="重置为默认设置" Width="130" Height="28" Margin="8,0,0,0" Click="ResetConfig_OnClick" />
+                                <Button Content="从备份恢复…" Width="115" Height="28" Margin="8,0,0,0" Click="RestoreBackupButton_OnClick" />
                     </StackPanel>
                 </StackPanel>
             </TabItem>

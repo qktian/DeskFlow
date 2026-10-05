@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using DeskFlow.Core.Services;
 
 namespace DeskFlow.Shell;
 
@@ -26,6 +27,7 @@ public sealed class DesktopDoubleClickHook : IDisposable
         _hookProc = HookCallback;
         var moduleHandle = NativeMethods.GetModuleHandle(null);
         _hookId = NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, _hookProc, moduleHandle, 0);
+        if (_hookId == IntPtr.Zero) DiagnosticLog.Error("MouseHook", $"Cannot install hook; Win32={Marshal.GetLastWin32Error()}");
     }
 
     public void Stop()

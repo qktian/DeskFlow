@@ -149,9 +149,32 @@ public sealed class TodoBoardModel
         Style.Opacity = Math.Clamp(Style.Opacity, 0.2, 1.0);
         Style.CornerRadius = Math.Clamp(Style.CornerRadius, 0, 24);
         Items ??= new List<TodoItemModel>();
+        Items.RemoveAll(item => item is null);
+        var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in Items)
         {
+            if (string.IsNullOrWhiteSpace(item.Id) || !ids.Add(item.Id))
+            {
+                item.Id = Guid.NewGuid().ToString("N");
+                ids.Add(item.Id);
+            }
             item.Normalize();
+        }
+        // Malformed imported JSON must not create cycles or unbounded UI recursion.
+        var byId = Items.ToDictionary(item => item.Id, StringComparer.Ordinal);
+        foreach (var item in Items)
+        {
+            var visited = new HashSet<string>(StringComparer.Ordinal) { item.Id };
+            var parentId = item.ParentId;
+            while (!string.IsNullOrEmpty(parentId))
+            {
+                if (!visited.Add(parentId) || visited.Count > 64 || !byId.TryGetValue(parentId, out var parent))
+                {
+                    item.ParentId = null;
+                    break;
+                }
+                parentId = parent.ParentId;
+            }
         }
     }
 }

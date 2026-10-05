@@ -1,3 +1,5 @@
+using DeskFlow.Core.Services;
+
 namespace DeskFlow.Shell;
 
 /// <summary>
@@ -8,6 +10,7 @@ namespace DeskFlow.Shell;
 public static class DesktopIconService
 {
     private const uint ToggleCommandId = 0x7402;
+    private static DateTime _lastFailureLogged;
 
     public static bool AreIconsVisible()
     {
@@ -33,20 +36,26 @@ public static class DesktopIconService
     /// </summary>
     public static bool TrySetIconsVisible(bool visible)
     {
-        if (AreIconsVisible() == visible)
-        {
-            return true;
-        }
-
-        FindDesktopListView(out var shellView);
-        if (shellView == IntPtr.Zero)
+        var listView = FindDesktopListView(out var shellView);
+        if (listView == IntPtr.Zero || shellView == IntPtr.Zero)
         {
             // explorer 尚未创建桌面窗口（开机自启时常见）
             return false;
         }
 
-        NativeMethods.SendMessage(shellView, NativeMethods.WM_COMMAND, (IntPtr)ToggleCommandId, IntPtr.Zero);
-        return AreIconsVisible() == visible;
+        if (NativeMethods.IsWindowVisible(listView) == visible) return true;
+
+        if (!BoundedWindowMessage.TrySend(shellView, NativeMethods.WM_COMMAND, (IntPtr)ToggleCommandId, out var error))
+        {
+            if (DateTime.UtcNow - _lastFailureLogged > TimeSpan.FromSeconds(30))
+            {
+                _lastFailureLogged = DateTime.UtcNow;
+                DiagnosticLog.Error("DesktopIcons", $"Explorer command timed out or failed; Win32={error}");
+            }
+            return false;
+        }
+        var currentList = FindDesktopListView(out _);
+        return currentList != IntPtr.Zero && NativeMethods.IsWindowVisible(currentList) == visible;
     }
 
     /// <summary>
@@ -54,6 +63,8 @@ public static class DesktopIconService
     /// </summary>
     public static bool SetIconsVisibleWithRetry(bool visible, int attempts = 4, int delayMs = 250)
     {
+        attempts = Math.Clamp(attempts, 1, 4);
+        delayMs = Math.Clamp(delayMs, 0, 250);
         for (var i = 0; i < attempts; i++)
         {
             try

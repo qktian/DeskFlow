@@ -4,9 +4,18 @@ using DeskFlow.Core.Services;
 
 namespace DeskFlow.App.Services;
 
+public sealed record DesktopRename(string OldPath, string NewPath);
+
 public sealed class DesktopChangedEventArgs : EventArgs
 {
-    public DesktopChangedEventArgs(IReadOnlyList<string> paths) => Paths = paths;
+    public DesktopChangedEventArgs(IReadOnlyList<string> paths, IReadOnlyList<DesktopRename> renames, bool fullRescan)
+    {
+        Paths = paths;
+        Renames = renames;
+        FullRescan = fullRescan;
+    }
+    public IReadOnlyList<DesktopRename> Renames { get; }
+    public bool FullRescan { get; }
 
     /// <summary>本轮发生变化的条目路径（含重命名前的旧路径）。</summary>
     public IReadOnlyList<string> Paths { get; }
@@ -21,7 +30,11 @@ public sealed class DesktopWatcher : IDisposable
     private readonly List<FileSystemWatcher> _watchers = new();
     private readonly HashSet<string> _changedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _timer;
-    private bool _disposed;
+    private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
+    private readonly List<DesktopRename> _renames = new();
+    private bool _scheduled;
+    private bool _fullRescan;
+    private volatile bool _disposed;
 
     public DesktopWatcher()
     {
@@ -34,9 +47,9 @@ public sealed class DesktopWatcher : IDisposable
 
     public event EventHandler<DesktopChangedEventArgs>? DesktopChanged;
 
-    public void Start()
+    public void Start(IEnumerable<string>? directories = null)
     {
-        foreach (var directory in DesktopScanner.GetDesktopDirectories())
+        foreach (var directory in directories ?? DesktopScanner.GetDesktopDirectories())
         {
             try
             {
@@ -51,29 +64,42 @@ public sealed class DesktopWatcher : IDisposable
                 watcher.Changed += (_, e) => Schedule(e.FullPath);
                 watcher.Renamed += (_, e) =>
                 {
-                    Schedule(e.OldFullPath);
+                    lock (_changedPaths)
+                    {
+                        _renames.Add(new DesktopRename(e.OldFullPath, e.FullPath));
+                        _changedPaths.Add(e.OldFullPath);
+                    }
                     Schedule(e.FullPath);
+                };
+                // Buffer overflow means individual events may have been lost.
+                watcher.Error += (_, args) =>
+                {
+                    DiagnosticLog.Error("DesktopWatcher", "Events may have been lost; scheduling a full rescan", args.GetException());
+                    Schedule(null);
                 };
                 watcher.EnableRaisingEvents = true;
 
                 _watchers.Add(watcher);
             }
-            catch
+            catch (Exception error)
             {
-                // 目录不可监听时跳过（例如部分网络位置）
+                DiagnosticLog.Error("DesktopWatcher", "Could not watch a desktop directory", error);
             }
         }
     }
 
-    private void Schedule(string path)
+    private void Schedule(string? path)
     {
         lock (_changedPaths)
         {
-            _changedPaths.Add(path);
+            if (_disposed) return;
+            if (path is null) _fullRescan = true;
+            else _changedPaths.Add(path);
+            if (_scheduled) return;
+            _scheduled = true;
         }
-
-        _timer.Stop();
-        _timer.Start();
+        // One dispatcher post per batch, with bounded latency during continuous writes.
+        _dispatcher.BeginInvoke(() => { if (!_disposed) _timer.Start(); });
     }
 
     private void OnTimerTick(object? sender, EventArgs e)
@@ -81,13 +107,20 @@ public sealed class DesktopWatcher : IDisposable
         _timer.Stop();
 
         List<string> paths;
+        List<DesktopRename> renames;
+        bool fullRescan;
         lock (_changedPaths)
         {
             paths = _changedPaths.ToList();
+            renames = _renames.ToList();
+            fullRescan = _fullRescan;
             _changedPaths.Clear();
+            _renames.Clear();
+            _fullRescan = false;
+            _scheduled = false;
         }
 
-        DesktopChanged?.Invoke(this, new DesktopChangedEventArgs(paths));
+        if (!_disposed) DesktopChanged?.Invoke(this, new DesktopChangedEventArgs(paths, renames, fullRescan));
     }
 
     public void Dispose()
@@ -97,6 +130,7 @@ public sealed class DesktopWatcher : IDisposable
             return;
         }
 
+        _disposed = true;
         _timer.Stop();
 
         foreach (var watcher in _watchers)

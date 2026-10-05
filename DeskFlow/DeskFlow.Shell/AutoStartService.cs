@@ -1,5 +1,6 @@
 using System.IO;
 using Microsoft.Win32;
+using DeskFlow.Core.Services;
 
 namespace DeskFlow.Shell;
 
@@ -16,8 +17,9 @@ public static class AutoStartService
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, false);
             return key?.GetValue(ValueName) is not null;
         }
-        catch
+        catch (Exception error)
         {
+            DiagnosticLog.Error("AutoStart", "Cannot read startup setting", error);
             return false;
         }
     }
@@ -42,9 +44,9 @@ public static class AutoStartService
                 key.DeleteValue(ValueName, false);
             }
         }
-        catch
+        catch (Exception error)
         {
-            // 设置自启失败不阻断程序运行
+            DiagnosticLog.Error("AutoStart", "Cannot update startup setting", error);
         }
     }
 

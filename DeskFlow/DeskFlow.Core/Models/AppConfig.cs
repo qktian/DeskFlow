@@ -39,6 +39,9 @@ public sealed class GeneralSettings
     /// <summary>待办面板中是否显示已完成（含已打卡）的任务。</summary>
     public bool ShowCompletedTodos { get; set; } = true;
 
+    /// <summary>屏幕热插拔后用作首选回收屏的显示器设备标识。</summary>
+    public string PreferredMonitorId { get; set; } = string.Empty;
+
     public HotkeySettings Hotkeys { get; set; } = new();
 
     public void CopyFrom(GeneralSettings other)
@@ -54,6 +57,7 @@ public sealed class GeneralSettings
         ForceAutoClassify = other.ForceAutoClassify;
         LayoutInitialized = other.LayoutInitialized;
         ShowCompletedTodos = other.ShowCompletedTodos;
+        PreferredMonitorId = other.PreferredMonitorId;
         Hotkeys.ToggleBoxes = other.Hotkeys.ToggleBoxes;
         Hotkeys.Organize = other.Hotkeys.Organize;
     }

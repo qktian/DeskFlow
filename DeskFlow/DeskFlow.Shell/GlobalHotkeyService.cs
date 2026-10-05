@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using DeskFlow.Core.Services;
 
 namespace DeskFlow.Shell;
 
@@ -42,9 +43,10 @@ public static class HotkeyParser
         uint modifiers = 0;
         string? key = null;
 
-        foreach (var rawPart in text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var rawPart in text.Split('+', StringSplitOptions.TrimEntries))
         {
             var part = rawPart.Trim();
+            if (part.Length == 0) return null;
             switch (part.ToLowerInvariant())
             {
                 case "ctrl":
@@ -63,6 +65,7 @@ public static class HotkeyParser
                     continue;
             }
 
+            if (key is not null) return null;
             key = part;
         }
 
@@ -73,6 +76,9 @@ public static class HotkeyParser
 
         if (key.Length == 1)
         {
+            // Uppercase letters describe a key, not an implicit Shift modifier.
+            if (char.IsAsciiLetter(key[0]))
+                return new HotkeyCombination(modifiers, char.ToUpperInvariant(key[0]));
             var scan = NativeMethods.VkKeyScan(key[0]);
             if (scan == -1)
             {
@@ -84,6 +90,8 @@ public static class HotkeyParser
             {
                 modifiers |= NativeMethods.MOD_SHIFT;
             }
+            if ((scan & 0x0200) != 0) modifiers |= NativeMethods.MOD_CONTROL;
+            if ((scan & 0x0400) != 0) modifiers |= NativeMethods.MOD_ALT;
 
             return new HotkeyCombination(modifiers, vk);
         }
@@ -148,7 +156,9 @@ public sealed class GlobalHotkeyService : IDisposable
     }
 
     private readonly MessageWindow _window = new();
-    private readonly Dictionary<int, HotkeyCombination> _registered = new();
+    private sealed record Binding(int NativeId, HotkeyCombination Combination);
+    private Dictionary<int, Binding> _registered = new();
+    private int _nextNativeId = 100;
     private bool _disposed;
 
     public const int ToggleBoxesId = 1;
@@ -158,25 +168,68 @@ public sealed class GlobalHotkeyService : IDisposable
 
     public GlobalHotkeyService()
     {
-        _window.HotkeyPressed += (_, id) => HotkeyPressed?.Invoke(this, id);
+        _window.HotkeyPressed += (_, id) =>
+        {
+            foreach (var pair in _registered)
+                if (pair.Value.NativeId == id) { HotkeyPressed?.Invoke(this, pair.Key); break; }
+        };
     }
 
     public bool Register(int id, string hotkeyText)
     {
-        Unregister(id);
+        return TryApplyInternal(new Dictionary<int, string> { [id] = hotkeyText }, out _, merge: true);
+    }
 
-        var combination = HotkeyParser.Parse(hotkeyText);
-        if (combination is null)
+    public IReadOnlyDictionary<int, HotkeyCombination> Active =>
+        _registered.ToDictionary(p => p.Key, p => p.Value.Combination);
+
+    public bool TryApply(IReadOnlyDictionary<int, string> desired, out string error)
+        => TryApplyInternal(desired, out error, merge: false);
+
+    private bool TryApplyInternal(IReadOnlyDictionary<int, string> desired, out string error, bool merge)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        error = string.Empty;
+        var parsed = merge ? Active.Where(p => !desired.ContainsKey(p.Key)).ToDictionary(p => p.Key, p => p.Value)
+            : new Dictionary<int, HotkeyCombination>();
+        foreach (var pair in desired)
         {
-            return false;
+            if (string.IsNullOrWhiteSpace(pair.Value)) continue; // blank explicitly disables this action
+            var combination = HotkeyParser.Parse(pair.Value);
+            var action = pair.Key == ToggleBoxesId ? "显示 / 隐藏盒子" : "一键整理";
+            if (combination is null) { error = $"{action}的快捷键格式无效。示例：Ctrl+Alt+O；留空可禁用。"; return false; }
+            if (combination.VirtualKey == 0x7B) { error = "F12 由系统保留，请选择其他按键。"; return false; }
+            if (parsed.ContainsValue(combination)) { error = $"快捷键 {combination} 被分配给多个操作，请使用不同组合。"; return false; }
+            parsed.Add(pair.Key, combination);
         }
 
-        if (!NativeMethods.RegisterHotKey(_window.Handle, id, combination.Modifiers, combination.VirtualKey))
+        var staged = new List<Binding>();
+        var next = new Dictionary<int, Binding>();
+        foreach (var pair in parsed)
         {
-            return false;
+            var binding = _registered.Values.FirstOrDefault(b => b.Combination == pair.Value);
+            if (binding is null)
+            {
+                // Use a fresh native ID while retaining every previously working registration.
+                do { _nextNativeId = _nextNativeId >= 0xBFFF ? 100 : _nextNativeId + 1; }
+                while (_registered.Values.Concat(staged).Any(b => b.NativeId == _nextNativeId));
+                if (!NativeMethods.RegisterHotKey(_window.Handle, _nextNativeId,
+                        pair.Value.Modifiers | 0x4000, pair.Value.VirtualKey))
+                {
+                    var code = Marshal.GetLastWin32Error();
+                    foreach (var added in staged) NativeMethods.UnregisterHotKey(_window.Handle, added.NativeId);
+                    error = $"快捷键 {pair.Value} 无法注册（可能被其他程序或系统占用，错误码 {code}）。请选择其他组合，原有热键仍然有效。";
+                    DiagnosticLog.Error("Hotkeys", error);
+                    return false;
+                }
+                binding = new Binding(_nextNativeId, pair.Value);
+                staged.Add(binding);
+            }
+            next.Add(pair.Key, binding);
         }
-
-        _registered[id] = combination;
+        foreach (var old in _registered.Values)
+            if (!next.Values.Contains(old)) NativeMethods.UnregisterHotKey(_window.Handle, old.NativeId);
+        _registered = next;
         return true;
     }
 
@@ -187,7 +240,7 @@ public sealed class GlobalHotkeyService : IDisposable
             return;
         }
 
-        NativeMethods.UnregisterHotKey(_window.Handle, id);
+        NativeMethods.UnregisterHotKey(_window.Handle, _registered[id].NativeId);
         _registered.Remove(id);
     }
 
@@ -200,7 +253,7 @@ public sealed class GlobalHotkeyService : IDisposable
 
         foreach (var id in _registered.Keys.ToList())
         {
-            NativeMethods.UnregisterHotKey(_window.Handle, id);
+            NativeMethods.UnregisterHotKey(_window.Handle, _registered[id].NativeId);
         }
 
         _registered.Clear();

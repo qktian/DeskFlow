@@ -10,6 +10,7 @@ public sealed class FileItemViewModel : INotifyPropertyChanged
 {
     private ImageSource? _icon;
     private bool _isNameVisible;
+    private bool _isSelected;
 
     public FileItemViewModel(string path, string name, ImageSource? icon)
     {
@@ -21,6 +22,13 @@ public sealed class FileItemViewModel : INotifyPropertyChanged
     public string Path { get; }
 
     public string Name { get; }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { if (_isSelected == value) return; _isSelected = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected))); }
+    }
 
     public ImageSource? Icon
     {

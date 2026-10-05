@@ -70,7 +70,7 @@ public static class DesktopScanner
                         continue;
                     }
 
-                    items.Add(FileItem.FromPath(path));
+                    items.Add(FileMetadataCache.Get(path));
                 }
                 catch
                 {

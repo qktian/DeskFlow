@@ -83,35 +83,67 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer x:Name="ItemsScroll"
+            <ListBox x:Name="ItemsScroll"
                           Grid.Row="1"
                           Margin="6"
-                          VerticalScrollBarVisibility="Hidden"
-                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="0"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                          ScrollViewer.CanContentScroll="True"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.CacheLength="0"
+                          BorderThickness="0" Background="Transparent"
                           AllowDrop="True"
                           Drop="ItemsScroll_OnDrop"
-                          DragOver="ItemsScroll_OnDragOver">
-                <ItemsControl x:Name="ItemsHost">
-                    <ItemsControl.ItemsPanel>
+                          DragOver="ItemsScroll_OnDragOver"
+                          ScrollViewer.ScrollChanged="ItemsScroll_OnScrollChanged">
+                <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <WrapPanel Orientation="Horizontal" />
+                            <VirtualizingStackPanel Orientation="Vertical" />
                         </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="Margin" Value="0" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="Focusable" Value="False" />
+                        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><ContentPresenter /></ControlTemplate></Setter.Value></Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <ItemsControl ItemsSource="{Binding}" HorizontalAlignment="Stretch">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Rows="1"
+                                                 Columns="{Binding ItemColumns, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <Border Width="{Binding ItemWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                            <Border HorizontalAlignment="Stretch"
                                     Height="{Binding ItemHeight, RelativeSource={RelativeSource AncestorType=Window}}"
-                                    Margin="3"
+                                    Margin="{Binding ItemMargin, RelativeSource={RelativeSource AncestorType=Window}}"
                                     CornerRadius="8"
-                                    Background="#0FFFFFFF"
                                     BorderBrush="#14FFFFFF"
                                     BorderThickness="1"
                                     Tag="{Binding}"
+                                    Loaded="Item_OnLoaded"
                                     PreviewMouseLeftButtonDown="Item_OnPreviewMouseLeftButtonDown"
                                     PreviewMouseRightButtonUp="Item_OnPreviewMouseRightButtonUp"
                                     MouseMove="Item_OnMouseMove"
                                     MouseEnter="Item_OnMouseEnter"
                                     MouseLeave="Item_OnMouseLeave">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="#0FFFFFFF" />
+                                        <Style.Triggers><DataTrigger Binding="{Binding IsSelected}" Value="True"><Setter Property="Background" Value="#55FFFFFF" /></DataTrigger></Style.Triggers>
+                                    </Style>
+                                </Border.Style>
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="*" />
@@ -146,9 +178,11 @@
                                 </Grid>
                             </Border>
                         </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
 
             <TextBlock x:Name="EmptyHint"
                        Grid.Row="1"

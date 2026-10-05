@@ -4,6 +4,14 @@ namespace DeskFlow.Core.Services;
 
 public static class RuleEngine
 {
+    /// <summary>New user rules take precedence; normalize priorities to avoid overflow.</summary>
+    public static void AddOverride(List<RuleModel> rules, RuleModel rule)
+    {
+        var ordered = rules.OrderBy(r => r.Priority).ThenBy(r => r.Name).ToList();
+        for (var i = 0; i < ordered.Count; i++) ordered[i].Priority = i + 1;
+        rule.Priority = 0;
+        rules.Add(rule);
+    }
     /// <summary>生成内置默认规则（需配合 DefaultBoxes 使用，按名称绑定目标盒子）。</summary>
     public static List<RuleModel> CreateDefaultRules(IReadOnlyDictionary<string, string> boxIdByName)
     {
@@ -63,7 +71,7 @@ public static class RuleEngine
     {
         var result = new Dictionary<string, List<string>>();
         var boxList = boxes.ToList();
-        var ruleList = rules.ToList();
+        var ruleList = rules.Where(r => r.Enabled).OrderBy(r => r.Priority).ThenBy(r => r.Name).ToList();
         var unclassified = boxList.FirstOrDefault(b => b.Kind == BoxKind.Unclassified);
         var knownBoxIds = boxList.Select(b => b.Id).ToHashSet();
 
@@ -80,7 +88,7 @@ public static class RuleEngine
 
         foreach (var item in items)
         {
-            var rule = Match(item, ruleList);
+            var rule = ruleList.FirstOrDefault(r => r.IsMatch(item));
             if (rule is not null && knownBoxIds.Contains(rule.TargetBoxId))
             {
                 Push(rule.TargetBoxId, item.Path);

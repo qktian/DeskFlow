@@ -13,6 +13,13 @@ public partial class App : Application
 {
     private const string SingleInstanceMutexName = "DeskFlow.SingleInstance.Mutex";
     private const string ExitSignalName = "DeskFlow.ExitSignal";
+    private const string RestoreSignalName = "DeskFlow.RestoreDesktopSignal";
+    private EventWaitHandle? _restoreSignal;
+    private RegisteredWaitHandle? _restoreRegistration;
+    private DesktopRecovery? _recovery;
+    private bool _recoveryWarningShown;
+    private bool _shuttingDown;
+    private bool _iconWarningShown;
 
     private Mutex? _mutex;
     private EventWaitHandle? _exitSignal;
@@ -21,6 +28,7 @@ public partial class App : Application
     private AppConfig _config = null!;
     private BoxManager _manager = null!;
     private TodoManager _todoManager = null!;
+    private SearchWindow? _searchWindow;
     private TrayController _tray = null!;
     private DesktopWatcher _watcher = null!;
     private DesktopDoubleClickHook _desktopHook = null!;
@@ -28,11 +36,21 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private TodoHistoryWindow? _historyWindow;
     private DispatcherTimer? _iconGuardTimer;
+    private CancellationTokenSource? _hideIconsCancellation;
     private volatile bool _restoreIconsPending;
+    private bool _saveWarningShown;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        if (e.Args.Length == 2 && e.Args[0] == DesktopRecovery.WatchArgument)
+        {
+            Shutdown(DesktopRecovery.RunGuardian(e.Args[1]));
+            return;
+        }
+
+        var isRecoveryRequest = e.Args.Any(a => a.Equals("--recover-desktop", StringComparison.OrdinalIgnoreCase));
 
         var isExitRequest = e.Args.Any(a => a.Equals("--exit", StringComparison.OrdinalIgnoreCase));
 
@@ -40,16 +58,16 @@ public partial class App : Application
         if (!createdNew)
         {
             // 已有实例在运行：--exit 用于通知它优雅退出（更新 / 卸载场景）
-            if (isExitRequest)
+            if (isExitRequest || isRecoveryRequest)
             {
                 try
                 {
-                    using var signal = EventWaitHandle.OpenExisting(ExitSignalName);
+                    using var signal = EventWaitHandle.OpenExisting(isExitRequest ? ExitSignalName : RestoreSignalName);
                     signal.Set();
                 }
-                catch
+                catch (Exception error)
                 {
-                    // 实例刚好退出时忽略
+                    DiagnosticLog.Error("Control", "Could not signal the running instance; retry when startup completes.", error);
                 }
             }
 
@@ -57,17 +75,48 @@ public partial class App : Application
             return;
         }
 
+        if (isExitRequest)
+        {
+            Shutdown();
+            return;
+        }
+
+        if (isRecoveryRequest)
+        {
+            using var recovery = new DesktopRecovery();
+            var restored = recovery.Restore();
+            DiagnosticLog.Info("Recovery", $"Manual recovery result: {restored}");
+            if (!restored) MessageBox.Show("Explorer 尚未就绪。请等待资源管理器恢复后，再运行 --recover-desktop。", "DeskFlow");
+            Shutdown(restored ? 0 : 1);
+            return;
+        }
+
+        DiagnosticLog.Info("Startup", $"Starting {System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}; OS={Environment.OSVersion}; runtime={Environment.Version}");
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            DiagnosticLog.Error("Fatal", "Unhandled process exception", args.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            DiagnosticLog.Error("Task", "Unobserved background exception", args.Exception);
+            args.SetObserved();
+        };
+        ConfigService.SaveFailed += OnConfigSaveFailed;
         DispatcherUnhandledException += (_, args) =>
         {
+            DiagnosticLog.Error("Fatal", "Unhandled UI exception; shutting down safely", args.Exception);
+            StopIconGuard();
+            _recovery?.Restore();
             MessageBox.Show(
-                $"DeskFlow 遇到问题：\n{args.Exception.Message}\n\n如果频繁出现，请在设置中重置为默认配置。",
+                $"DeskFlow 遇到问题，将安全退出：\n{args.Exception.Message}\n\n诊断日志：{DiagnosticLog.Current.DirectoryPath}\n可重新启动程序；系统图标可通过 --recover-desktop 恢复。",
                 "DeskFlow",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             args.Handled = true;
+            Shutdown(1);
         };
 
         _config = ConfigService.Load();
+        ScreenHelper.MigrateLegacyCoordinates(_config);
+        DiagnosticLog.Info("Config", $"Loaded configuration schema v{_config.Version}; displays={ScreenHelper.GetMonitors().Count}");
         _initialized = true;
 
         // 亚克力效果在 WPF 分层窗口上会渲染为纯黑不透明，V1.0 已移除该特性；
@@ -79,22 +128,26 @@ public partial class App : Application
             AutoStartService.SetEnabled(true);
         }
 
-        ApplyDesktopIcons();
-
         _manager = new BoxManager(_config);
         _manager.SettingsRequested += (_, _) => OpenSettings();
         _manager.TodoCreateRequested += (_, _) => _todoManager.AddBoard();
         _manager.Initialize();
+        _manager.EnsureOnScreen();
 
         _todoManager = new TodoManager(_config);
         _todoManager.HistoryRequested += (_, _) => OpenHistory();
         _todoManager.Initialize();
+        _manager.LayoutRestored += (_, _) => _todoManager.RebuildFromConfig();
 
         _tray = new TrayController(_manager, _todoManager);
         _tray.SettingsRequested += (_, _) => OpenSettings();
         _tray.HistoryRequested += (_, _) => OpenHistory();
+        _tray.SearchRequested += (_, _) => OpenSearch();
         _tray.ExitRequested += (_, _) => Shutdown();
         _tray.SystemIconsVisibilityChanged += (_, _) => ApplyDesktopIcons();
+        _tray.RestoreDesktopRequested += (_, _) => RestoreDesktopManually();
+        _recovery = new DesktopRecovery();
+        ApplyDesktopIcons();
 
         _watcher = new DesktopWatcher();
         _watcher.DesktopChanged += OnDesktopChanged;
@@ -119,6 +172,10 @@ public partial class App : Application
             Timeout.Infinite,
             executeOnlyOnce: true);
 
+        _restoreSignal = new EventWaitHandle(false, EventResetMode.AutoReset, RestoreSignalName);
+        _restoreRegistration = ThreadPool.RegisterWaitForSingleObject(_restoreSignal,
+            (_, _) => Dispatcher.InvokeAsync(RestoreDesktopManually), null, Timeout.Infinite, false);
+
         if (e.Args.Any(a => a.Equals("--smoke-test", StringComparison.OrdinalIgnoreCase)))
         {
             var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
@@ -133,57 +190,46 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        try
+        _shuttingDown = true;
+        ConfigService.SaveFailed -= OnConfigSaveFailed;
+        if (_initialized)
         {
-            if (_initialized)
-            {
-                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
-                SystemEvents.SessionEnding -= OnSessionEnding;
-
-                // 退出即恢复：停止守护与后台隐藏重试，确保系统桌面图标一定还原
-                _restoreIconsPending = true;
-                StopIconGuard();
-
-                _desktopHook?.Dispose();
-                _hotkeys?.Dispose();
-                _watcher?.Dispose();
-                _tray?.Dispose();
-                _todoManager?.Dispose();
-                _manager?.Icons.Dispose();
-
-                DesktopIconService.SetIconsVisibleWithRetry(true, attempts: 4);
-                _manager?.Save();
-            }
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
+            ReliableCleanup.Run(
+                ("Stop icon guard", StopIconGuard),
+                ("Restore desktop", () => _recovery?.Restore()),
+                ("Save configuration", () => _manager?.Save()),
+                ("Mouse hook", () => _desktopHook?.Dispose()),
+                ("Hotkeys", () => _hotkeys?.Dispose()),
+                ("Desktop watcher", () => _watcher?.Dispose()),
+                ("Tray", () => _tray?.Dispose()),
+                ("Todos", () => _todoManager?.Dispose()),
+                ("Icons", () => _manager?.Icons.Dispose()),
+                ("Guardian handle", () => _recovery?.Dispose()));
+            DiagnosticLog.Info("Shutdown", $"Exit code {e.ApplicationExitCode}");
         }
-        catch
-        {
-            // 退出阶段不再弹窗打扰用户
-        }
-        finally
-        {
-            try
-            {
-                _mutex?.ReleaseMutex();
-            }
-            catch
-            {
-                // 第二实例没有获得互斥体所有权，无需释放
-            }
-
-            _mutex?.Dispose();
-            base.OnExit(e);
-        }
+        _restoreRegistration?.Unregister(null);
+        _restoreSignal?.Dispose();
+        _exitSignalRegistration?.Unregister(null);
+        _exitSignal?.Dispose();
+        try { _mutex?.ReleaseMutex(); } catch (ApplicationException) { }
+        _mutex?.Dispose();
+        base.OnExit(e);
     }
 
     private void OnDesktopChanged(object? sender, DesktopChangedEventArgs e)
     {
+        foreach (var rename in e.Renames) _manager.RenameItem(rename.OldPath, rename.NewPath);
         // 文件被替换后图标可能已变化，先让缓存失效，再重新归类
         foreach (var path in e.Paths)
         {
             _manager.Icons.Remove(path);
+            FileMetadataCache.Invalidate(path);
         }
 
-        _manager.AssignNewItems();
+        if (e.FullRescan) _manager.QueueAssignNewItems();
+        else _manager.UpdateChangedItems(e.Paths);
     }
 
     private void OnHotkeyPressed(object? sender, int id)
@@ -201,9 +247,22 @@ public partial class App : Application
 
     private void ApplyHotkeys()
     {
-        _hotkeys.Register(GlobalHotkeyService.ToggleBoxesId, _config.General.Hotkeys.ToggleBoxes);
-        _hotkeys.Register(GlobalHotkeyService.OrganizeId, _config.General.Hotkeys.Organize);
+        var error = TryApplyHotkeys(_config.General.Hotkeys.ToggleBoxes, _config.General.Hotkeys.Organize);
+        if (error is not null)
+        {
+            // At startup, a conflict for one action should not disable an unrelated free key.
+            if (_hotkeys.Active.Count == 0)
+            {
+                _hotkeys.Register(GlobalHotkeyService.ToggleBoxesId, _config.General.Hotkeys.ToggleBoxes);
+                _hotkeys.Register(GlobalHotkeyService.OrganizeId, _config.General.Hotkeys.Organize);
+            }
+            _tray.ShowBalloon("快捷键未生效：请在设置中更换", error);
+        }
     }
+
+    private string? TryApplyHotkeys(string toggle, string organize) => _hotkeys.TryApply(
+        new Dictionary<int, string> { [GlobalHotkeyService.ToggleBoxesId] = toggle, [GlobalHotkeyService.OrganizeId] = organize },
+        out var error) ? null : error;
 
     private void ApplyDesktopHook()
     {
@@ -224,41 +283,63 @@ public partial class App : Application
     /// </summary>
     private void ApplyDesktopIcons()
     {
+        if (_shuttingDown) return;
         if (_config.General.HideSystemIcons)
         {
+            if (_recovery?.EnsureArmed() != true)
+            {
+                StopIconGuard();
+                if (!_recoveryWarningShown)
+                    _tray?.ShowBalloon("桌面恢复保护未启动", "已暂停隐藏系统图标。请重启 DeskFlow，或从托盘打开诊断日志。");
+                _recoveryWarningShown = true;
+                return;
+            }
             HideSystemIconsInBackground();
             StartIconGuard();
         }
         else
         {
             StopIconGuard();
-            DesktopIconService.SetIconsVisibleWithRetry(true, attempts: 3);
+            if (_recovery?.Restore() != true) WarnDesktopUnavailable();
+            else _iconWarningShown = false;
         }
     }
 
-    private void HideSystemIconsInBackground()
+    private async void HideSystemIconsInBackground()
     {
+        _hideIconsCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _hideIconsCancellation = cancellation;
         _restoreIconsPending = false;
-
-        _ = Task.Run(() =>
+        try
         {
-            for (var i = 0; i < 12 && !_restoreIconsPending; i++)
+            for (var i = 0; i < 12 && !_restoreIconsPending && _config.General.HideSystemIcons; i++)
             {
+                cancellation.Token.ThrowIfCancellationRequested();
                 try
                 {
                     if (DesktopIconService.TrySetIconsVisible(false))
                     {
+                        _iconWarningShown = false;
                         return;
                     }
                 }
-                catch
+                catch (Exception error)
                 {
-                    // explorer 尚未就绪，继续重试
+                    DiagnosticLog.Error("DesktopIcons", "Hide attempt failed", error);
                 }
 
-                Thread.Sleep(1500);
+                // Resume on the UI dispatcher so show/hide/exit cannot race each other.
+                await Task.Delay(1500, cancellation.Token);
             }
-        });
+            if (!_restoreIconsPending && !cancellation.IsCancellationRequested) WarnDesktopUnavailable();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_hideIconsCancellation, cancellation)) _hideIconsCancellation = null;
+            cancellation.Dispose();
+        }
     }
 
     private void StartIconGuard()
@@ -272,20 +353,38 @@ public partial class App : Application
         _iconGuardTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
         _iconGuardTimer.Tick += (_, _) =>
         {
-            if (!_config.General.HideSystemIcons)
+            if (_restoreIconsPending || !_config.General.HideSystemIcons)
             {
                 StopIconGuard();
                 return;
             }
 
             // 状态已符合时不会发送切换命令，因此不会造成闪烁
-            DesktopIconService.TrySetIconsVisible(false);
+            if (_recovery?.EnsureArmed() == true)
+            {
+                if (DesktopIconService.TrySetIconsVisible(false)) _iconWarningShown = false;
+                else WarnDesktopUnavailable();
+            }
+            else ApplyDesktopIcons();
         };
 
         _iconGuardTimer.Start();
     }
 
-    private void StopIconGuard() => _iconGuardTimer?.Stop();
+    private void StopIconGuard()
+    {
+        _restoreIconsPending = true;
+        _hideIconsCancellation?.Cancel();
+        _iconGuardTimer?.Stop();
+    }
+
+    private void WarnDesktopUnavailable()
+    {
+        if (_iconWarningShown || _shuttingDown) return;
+        _iconWarningShown = true;
+        DiagnosticLog.Error("DesktopIcons", "Explorer unavailable or unresponsive; desktop icon operation not completed.");
+        _tray?.ShowBalloon("桌面图标操作尚未完成", "Explorer 尚未就绪或无响应。程序会继续尝试；也可在资源管理器恢复后，从托盘选择恢复系统桌面图标。");
+    }
 
     private void OpenSettings()
     {
@@ -296,6 +395,8 @@ public partial class App : Application
         }
 
         _settingsWindow = new SettingsWindow(_config, _manager);
+        _settingsWindow.ValidateHotkeys = TryApplyHotkeys;
+        _settingsWindow.RebuildTodos = _todoManager.RebuildFromConfig;
         _settingsWindow.SettingsApplied += (_, _) =>
         {
             ApplyHotkeys();
@@ -322,17 +423,60 @@ public partial class App : Application
         _historyWindow.Show();
     }
 
+    private void OpenSearch()
+    {
+        if (_searchWindow is not null) { _searchWindow.Activate(); return; }
+        _searchWindow = new SearchWindow(_manager);
+        _searchWindow.Closed += (_, _) => _searchWindow = null;
+        _searchWindow.Show();
+    }
+
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
-        Dispatcher.InvokeAsync(() => _manager.EnsureOnScreen());
+        Dispatcher.InvokeAsync(() =>
+        {
+            _manager.EnsureOnScreen();
+            _todoManager.EnsureOnScreen();
+            _manager.Save();
+        });
+    }
+
+    private void OnConfigSaveFailed(Exception error)
+    {
+        if (_saveWarningShown) return;
+        _saveWarningShown = true;
+        Dispatcher.BeginInvoke(() => MessageBox.Show(
+            $"配置未能保存，当前修改可能在退出后丢失。请检查配置目录的权限和磁盘空间。\n\n{ConfigService.ConfigDirectory}\n{error.Message}",
+            "DeskFlow 保存失败", MessageBoxButton.OK, MessageBoxImage.Warning));
     }
 
     private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
     {
-        // 注销 / 关机：系统可能不会给完整的退出流程，这里先行恢复
         _restoreIconsPending = true;
+        try
+        {
+            // SystemEvents may run off the dispatcher; bound the wait if UI is occupied.
+            Dispatcher.Invoke(() => ReliableCleanup.Run(
+                ("Stop icon guard", StopIconGuard),
+                ("Session desktop restore", () => _recovery?.Restore()),
+                ("Session save", () => _manager?.Save())),
+                DispatcherPriority.Send, CancellationToken.None, TimeSpan.FromSeconds(3));
+        }
+        catch (Exception error)
+        {
+            DiagnosticLog.Error("SessionEnding", "UI cleanup unavailable; restoring desktop directly", error);
+            _recovery?.Restore();
+        }
+    }
+
+    private void RestoreDesktopManually()
+    {
+        _config.General.HideSystemIcons = false;
+        _settingsWindow?.KeepDesktopIconsVisible();
         StopIconGuard();
-        DesktopIconService.SetIconsVisibleWithRetry(true, attempts: 4);
+        var restored = _recovery?.Restore() == true;
         _manager.Save();
+        _tray.ShowBalloon(restored ? "系统桌面图标已恢复" : "恢复尚未完成",
+            restored ? "已关闭运行时隐藏系统图标。" : "Explorer 尚未就绪，请稍后从托盘重试恢复，或运行 --recover-desktop。");
     }
 }

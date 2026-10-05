@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using DeskFlow.Core.Services;
 
 namespace DeskFlow.Shell;
 
@@ -115,7 +116,7 @@ public static class FileOperationService
         }
     }
 
-    public static void MoveToRecycleBin(string path)
+    public static bool MoveToRecycleBin(string path)
     {
         try
         {
@@ -125,40 +126,39 @@ public static class FileOperationService
                 pFrom = path + "\0\0",
                 fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
             };
-            SHFileOperation(ref op);
-        }
-        catch
-        {
-            // 忽略
-        }
-    }
-
-    public static bool Rename(string path, string newName)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                var dir = new DirectoryInfo(path);
-                dir.MoveTo(Path.Combine(dir.Parent?.FullName ?? Path.GetPathRoot(path) ?? ".", newName));
-            }
-            else
-            {
-                var file = new FileInfo(path);
-                var directory = file.DirectoryName ?? ".";
-                var extension = file.Extension;
-                var target = Path.Combine(directory, newName.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
-                    ? newName
-                    : newName + extension);
-                file.MoveTo(target);
-            }
-
+            var result = SHFileOperation(ref op);
+            if (op.fAnyOperationsAborted) return false;
+            if (result != 0) throw new IOException($"系统错误代码：0x{result:X}");
             return true;
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show($"重命名失败：{ex.Message}", "DeskFlow");
+            System.Windows.MessageBox.Show($"删除失败：{ex.Message}", "DeskFlow");
             return false;
+        }
+    }
+
+    public static string? Rename(string path, string newName)
+    {
+        try
+        {
+            var isDirectory = Directory.Exists(path);
+            var target = FileNamePolicy.RenameTarget(path, newName, isDirectory);
+            if (isDirectory)
+            {
+                Directory.Move(path, target);
+            }
+            else
+            {
+                File.Move(path, target);
+            }
+
+            return target;
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"重命名失败：{ex.Message}", "DeskFlow");
+            return null;
         }
     }
 

@@ -11,6 +11,7 @@ using DeskFlow.Shell;
 using Brush = System.Windows.Media.Brush;
 using Color = System.Windows.Media.Color;
 using Point = System.Windows.Point;
+using Size = System.Windows.Size;
 
 namespace DeskFlow.App;
 
@@ -18,14 +19,17 @@ public partial class TodoBoardWindow : Window
 {
     private readonly TodoBoardModel _model;
     private readonly TodoManager _manager;
-    private Point? _dragStart;
-    private Point? _dragOffset;
+    private readonly PanelInteraction _interaction;
+    private bool _applyingModel;
+    private bool _autoHeightScheduled;
 
     public TodoBoardWindow(TodoBoardModel model, TodoManager manager)
     {
         InitializeComponent();
         _model = model;
         _manager = manager;
+        _interaction = new PanelInteraction(this, () => _manager.Config.General);
+        TitleBar.LostMouseCapture += (_, _) => FinishMove();
 
         SourceInitialized += OnSourceInitialized;
         Deactivated += (_, _) => SetBottomMost();
@@ -41,11 +45,18 @@ public partial class TodoBoardWindow : Window
 
     public void ApplyModel()
     {
-        Left = _model.X;
-        Top = _model.Y;
-        Width = Math.Clamp(_model.Width, 220, 700);
-        TitleText.Text = _model.Name;
-        SetCollapsedUi(_model.Collapsed);
+        _applyingModel = true;
+        try
+        {
+            var monitor = ScreenHelper.ForId(_model.ScreenId);
+            var desktop = monitor.ToDesktop(new Point(_model.X, _model.Y));
+            Left = desktop.X;
+            Top = desktop.Y;
+            Width = Math.Clamp(_model.Width, 220, 700);
+            TitleText.Text = _model.Name;
+            SetCollapsedUi(_model.Collapsed);
+        }
+        finally { _applyingModel = false; }
     }
 
     /// <summary>应用面板外观（背景色 / 透明度 / 圆角 / 文字色），与普通盒子同源。</summary>
@@ -239,20 +250,21 @@ public partial class TodoBoardWindow : Window
     /// <summary>等列表完成一次布局后再量高度，否则量到的是旧行。</summary>
     private void ScheduleAutoHeight()
     {
-        if (!AutoHeightEnabled)
+        if (!AutoHeightEnabled || _autoHeightScheduled)
         {
             return;
         }
 
+        _autoHeightScheduled = true;
         Dispatcher.BeginInvoke(
-            new Action(ApplyAutoHeight),
+            new Action(() => { _autoHeightScheduled = false; ApplyAutoHeight(); }),
             System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
-    /// <summary>按当前可见任务行的实际高度重算窗口高度，并在贴近屏幕下边缘时上移，保证不出屏。</summary>
+    /// <summary>自动高度固定顶部位置，屏幕下方放不下时使用滚动条，避免破坏用户对齐。</summary>
     private void ApplyAutoHeight()
     {
-        if (!AutoHeightEnabled || !IsLoaded)
+        if (!AutoHeightEnabled || !IsLoaded || _interaction.Active)
         {
             return;
         }
@@ -263,39 +275,13 @@ public partial class TodoBoardWindow : Window
             : MeasureRows(rows) + AutoContentPadding;
         var target = Math.Clamp(TitleBarHeight + content, MinAutoHeight, 1000);
 
-        var monitor = ScreenHelper.FromPoint(new Point(Left + (Width / 2), Top + (Height / 2)));
+        var monitor = ScreenHelper.FromWindow(this);
         var area = monitor.WorkArea;
 
-        // 上限：屏幕工作区高度（上下各留 12）
-        target = Math.Min(target, Math.Max(MinAutoHeight, area.Height - 24));
-
-        // 向下生长；触底则整体上移，仍放不下时再压缩高度
-        var top = Top;
-        if (top + target > area.Bottom - 12)
-        {
-            top = area.Bottom - 12 - target;
-        }
-
-        if (top < area.Top + 12)
-        {
-            top = area.Top + 12;
-        }
-
-        if (top + target > area.Bottom - 12)
-        {
-            target = Math.Max(MinAutoHeight, area.Bottom - 12 - top);
-        }
-
-        var changed = Math.Abs(Height - target) > 0.5 || Math.Abs(Top - top) > 0.5;
-        Top = top;
-        Height = target;
-        SyncToModel();
-
-        // 任务增删导致的高度 / 位置变化要落盘，否则下次启动会回到旧尺寸
-        if (changed)
-        {
-            _manager.Save();
-        }
+        var fitted = PanelLayout.AutoHeight(new Rect(Left, Top, Width, Height), target, MinAutoHeight, area);
+        if (Math.Abs(Height - fitted.Height) <= 0.5 && Math.Abs(Top - fitted.Top) <= 0.5) return;
+        ApplyInteractionBounds(fitted);
+        _manager.Save();
     }
 
     /// <summary>累加各行容器的实际高度（行高随标题 / 副标题有无而不同，必须实测）。</summary>
@@ -348,11 +334,18 @@ public partial class TodoBoardWindow : Window
 
     private void SetCollapsedUi(bool collapsed)
     {
-        ContentRow.Height = collapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        TodoScroll.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        ApplyHeightConstraints();
-        Height = collapsed ? TitleBarHeight : ExpandedHeight();
-        ApplyStyle();
+        var wasApplying = _applyingModel;
+        _applyingModel = true;
+        try
+        {
+            ContentRow.Height = collapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            TodoScroll.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+            var expandedHeight = ExpandedHeight();
+            ApplyHeightConstraints();
+            Height = collapsed ? TitleBarHeight : expandedHeight;
+            ApplyStyle();
+        }
+        finally { _applyingModel = wasApplying; }
     }
 
     private void CollapseButton_OnClick(object sender, RoutedEventArgs e)
@@ -365,51 +358,32 @@ public partial class TodoBoardWindow : Window
 
     // ---------- 尺寸调整 ----------
 
-    private void ThumbTop_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(0, -e.VerticalChange, false, true);
+    private void ThumbTop_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Top);
+    private void ThumbBottom_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Bottom);
+    private void ThumbLeft_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Left);
+    private void ThumbRight_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Right);
+    private void ThumbBottomRight_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Bottom | ResizeEdges.Right);
 
-    private void ThumbBottom_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(0, e.VerticalChange, false, false);
-
-    private void ThumbLeft_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(-e.HorizontalChange, 0, true, false);
-
-    private void ThumbRight_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(e.HorizontalChange, 0, false, false);
-
-    private void ThumbBottomRight_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(e.HorizontalChange, e.VerticalChange, false, false);
+    private void Thumb_OnDragStarted(object sender, DragStartedEventArgs e)
+    {
+        if (!_model.Collapsed) _interaction.Begin(resize: true);
+    }
 
     private void Thumb_OnDragCompleted(object sender, DragCompletedEventArgs e)
     {
+        _interaction.End();
         SyncToModel();
         _manager.Save();
+        ScheduleAutoHeight();
     }
 
-    /// <summary>调整面板尺寸（宽 220~700，高 200~1000，与配置归一化范围一致）。</summary>
-    private void Resize(double deltaWidth, double deltaHeight, bool moveLeft, bool moveTop)
+    private void ResizePanel(ResizeEdges edges)
     {
-        if (_model.Collapsed)
-        {
-            return;
-        }
-
-        // 手动调整高度即视为接管高度控制，自动关闭「高度自适应」（只改宽度不受影响）
-        if (_model.AutoHeight && Math.Abs(deltaHeight) > 0.5)
-        {
+        if (_model.Collapsed || !_interaction.Resizing) return;
+        if ((edges & (ResizeEdges.Top | ResizeEdges.Bottom)) != 0 && _model.AutoHeight)
             SetAutoHeight(false, keepCurrentHeight: true);
-        }
-
-        var newWidth = Math.Clamp(Width + deltaWidth, 220, 700);
-        var newHeight = Math.Clamp(Height + deltaHeight, 200, 1000);
-
-        if (moveLeft)
-        {
-            Left -= newWidth - Width;
-        }
-
-        if (moveTop)
-        {
-            Top -= newHeight - Height;
-        }
-
-        Width = newWidth;
-        Height = newHeight;
+        var minimumHeight = _model.AutoHeight ? MinAutoHeight : 200;
+        ApplyInteractionBounds(_interaction.Resize(edges, new Size(220, minimumHeight), new Size(700, 1000)));
     }
 
     // ---------- 窗口拖拽 / Z 序 ----------
@@ -431,60 +405,64 @@ public partial class TodoBoardWindow : Window
 
     private void TitleBar_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (PanelInteraction.IsTitleButton(e.OriginalSource as DependencyObject)) return;
         if (e.ClickCount > 1)
         {
             CollapseButton_OnClick(sender, e);
             return;
         }
-
-        if (e.OriginalSource is Button)
-        {
-            return;
-        }
-
-        // 记录「按下瞬间」鼠标相对窗口的偏移与窗口起点。
-        // 拖动过程始终用起点计算目标位置（绝对算法），避免增量累加 + 窗口移动
-        // 互相反馈导致来回摆动。
-        _dragOffset = e.GetPosition(this);
-        _dragStart = _dragOffset;
+        _interaction.Begin(resize: false);
         TitleBar.CaptureMouse();
         e.Handled = true;
     }
 
     private void TitleBar_OnMouseMove(object sender, MouseEventArgs e)
     {
-        if (_dragOffset is null || e.LeftButton != MouseButtonState.Pressed)
-        {
-            return;
-        }
-
-        var pos = e.GetPosition(this);
-        var x = Left + (pos.X - _dragOffset.Value.X);
-        var y = Top + (pos.Y - _dragOffset.Value.Y);
-        Left = x;
-        Top = y;
+        if (!_interaction.Moving || e.LeftButton != MouseButtonState.Pressed) return;
+        ApplyInteractionBounds(_interaction.Move());
         e.Handled = true;
     }
 
     private void TitleBar_OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (_dragOffset is null)
-        {
-            return;
-        }
+        FinishMove();
+        e.Handled = true;
+    }
 
-        _dragOffset = null;
+    private void FinishMove()
+    {
+        if (!_interaction.Moving) return;
+        _interaction.End();
         TitleBar.ReleaseMouseCapture();
+        _model.ScreenId = ScreenHelper.FromWindow(this).Id;
         SyncToModel();
         _manager.Save();
-        e.Handled = true;
+        ScheduleAutoHeight();
+    }
+
+    private void ApplyInteractionBounds(Rect bounds)
+    {
+        _applyingModel = true;
+        try
+        {
+            Left = bounds.Left;
+            Top = bounds.Top;
+            Width = bounds.Width;
+            Height = bounds.Height;
+        }
+        finally { _applyingModel = false; }
+        SyncToModel();
     }
 
     private void SyncToModel()
     {
+        if (_applyingModel || !IsLoaded) return;
         if (!double.IsFinite(Left) || !double.IsFinite(Top)) return;
-        _model.X = Left;
-        _model.Y = Top;
+        var monitor = ScreenHelper.FromWindow(this);
+        _model.ScreenId = monitor.Id;
+        var local = monitor.ToLocal(new Point(Left, Top));
+        _model.X = local.X;
+        _model.Y = local.Y;
         _model.Width = Width;
         if (!_model.Collapsed)
         {

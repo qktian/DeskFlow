@@ -34,8 +34,9 @@ public sealed class IconCache : IDisposable
     /// </summary>
     private const int SourceSize = 256;
 
-    /// <summary>缓存条目上限，超出后按最近使用时间淘汰，避免长期运行内存无限增长。</summary>
-    private const int MaxCachedEntries = 600;
+    /// <summary>Bitmap payload budget. WPF images also have overhead, so leave headroom.</summary>
+    private const long MaxCachedBytes = 64L * 1024 * 1024;
+    private const int MaxCachedEntries = 5_000;
 
     /// <summary>
     /// Windows 标准图标尺寸。.ico 文件只包含这些尺寸的原生图层
@@ -58,6 +59,16 @@ public sealed class IconCache : IDisposable
 
     private readonly Dictionary<string, ImageSource> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _lastAccess = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _entryBytes = new(StringComparer.OrdinalIgnoreCase);
+    private long _cachedBytes;
+    private long _hits;
+    private long _misses;
+    private long _evictions;
+
+    public (long Bytes, long Hits, long Misses, long Evictions) Statistics
+    {
+        get { lock (_sync) return (_cachedBytes, _hits, _misses, _evictions); }
+    }
     private readonly Dictionary<string, List<Action<ImageSource>>> _waiters = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
 
@@ -90,6 +101,9 @@ public sealed class IconCache : IDisposable
         {
             _cache.Clear();
             _lastAccess.Clear();
+            _entryBytes.Clear();
+            _cachedBytes = 0;
+            _waiters.Clear();
         }
     }
 
@@ -107,9 +121,11 @@ public sealed class IconCache : IDisposable
             if (_cache.TryGetValue(key, out var existing))
             {
                 _lastAccess[key] = DateTime.UtcNow.Ticks;
+                _hits++;
                 image = existing;
                 return true;
             }
+            _misses++;
         }
         return false;
     }
@@ -136,7 +152,10 @@ public sealed class IconCache : IDisposable
             {
                 _cache.Remove(k);
                 _lastAccess.Remove(k);
+                if (_entryBytes.Remove(k, out var bytes)) _cachedBytes -= bytes;
             }
+            foreach (var k in _waiters.Keys.Where(k => k.EndsWith("|" + path, StringComparison.OrdinalIgnoreCase)).ToList())
+                _waiters.Remove(k);
         }
     }
 
@@ -153,22 +172,25 @@ public sealed class IconCache : IDisposable
 
         lock (_sync)
         {
+            if (_disposed) return;
             if (_cache.TryGetValue(key, out var existing))
             {
                 _lastAccess[key] = DateTime.UtcNow.Ticks;
+                _hits++;
                 System.Windows.Application.Current?.Dispatcher.BeginInvoke(callback, existing);
                 return;
             }
+            _misses++;
 
             if (_waiters.TryGetValue(key, out var list))
             {
                 list.Add(callback);
                 return;
             }
-            _waiters[key] = new List<Action<ImageSource>> { callback };
+            var callbacks = new List<Action<ImageSource>> { callback };
+            _waiters[key] = callbacks;
+            _queue.Add(new IconRequest(path, pixelSize, scale, key, callbacks));
         }
-
-        _queue.Add(new IconRequest(path, pixelSize, scale, key));
     }
 
     /// <summary>
@@ -181,7 +203,7 @@ public sealed class IconCache : IDisposable
         var snapped = SnapToStandardSize(size);
         scale = dpiScale > 0 ? dpiScale : SystemDpiScale;
         pixelSize = Math.Max(16, (int)Math.Round(snapped * scale));
-        return pixelSize + "|" + path;
+        return pixelSize + "|" + scale.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "|" + path;
     }
 
     /// <summary>系统 DPI 缩放（1.0 = 100%）。调用方没有传入窗口缩放时使用。</summary>
@@ -205,41 +227,68 @@ public sealed class IconCache : IDisposable
 
     private void WorkerLoop()
     {
-        foreach (var req in _queue.GetConsumingEnumerable())
+        try
         {
-            try
+            foreach (var req in _queue.GetConsumingEnumerable())
             {
-                var img = Extract(req.Path, req.PixelSize, req.Scale);
-                List<Action<ImageSource>>? cbs = null;
-                lock (_sync)
+                try
                 {
-                    if (img != null)
+                    lock (_sync)
                     {
-                        if (_cache.Count >= MaxCachedEntries)
+                        if (_disposed) return;
+                        if (!_waiters.TryGetValue(req.Key, out var active) || !ReferenceEquals(active, req.Callbacks)) continue;
+                    }
+                    var img = Safe(() => Extract(req.Path, req.PixelSize, req.Scale)) ?? CreatePlaceholder();
+                    List<Action<ImageSource>>? cbs = null;
+                    lock (_sync)
+                    {
+                        if (_disposed) return;
+                        if (!_waiters.TryGetValue(req.Key, out var active) || !ReferenceEquals(active, req.Callbacks)) continue;
+                        if (img != null)
                         {
-                            EvictOldest();
+                            var bytes = img is BitmapSource bitmap
+                                ? (long)bitmap.PixelWidth * bitmap.PixelHeight * 4
+                                : (long)req.PixelSize * req.PixelSize * 4;
+                            if (bytes <= MaxCachedBytes)
+                            {
+                                while ((_cachedBytes + bytes > MaxCachedBytes || _cache.Count >= MaxCachedEntries) && _cache.Count > 0) EvictOldest();
+                                _cache[req.Key] = img;
+                                _entryBytes[req.Key] = bytes;
+                                _cachedBytes += bytes;
+                                _lastAccess[req.Key] = DateTime.UtcNow.Ticks;
+                            }
                         }
-                        _cache[req.Key] = img;
-                        _lastAccess[req.Key] = DateTime.UtcNow.Ticks;
+                        if (_waiters.TryGetValue(req.Key, out cbs))
+                        {
+                            _waiters.Remove(req.Key);
+                        }
                     }
-                    if (_waiters.TryGetValue(req.Key, out cbs))
-                    {
-                        _waiters.Remove(req.Key);
-                    }
-                }
 
-                if (cbs != null && img != null)
-                {
-                    foreach (var cb in cbs)
+                    if (cbs != null && img != null)
                     {
-                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(cb, img);
+                        foreach (var cb in cbs)
+                        {
+                            System.Windows.Application.Current?.Dispatcher.BeginInvoke(cb, img);
+                        }
+                    }
+                }
+                catch
+                {
+                    lock (_sync)
+                    {
+                        if (_waiters.TryGetValue(req.Key, out var active) && ReferenceEquals(active, req.Callbacks))
+                            _waiters.Remove(req.Key);
                     }
                 }
             }
-            catch
-            {
-                // 单个失败不影响后续
-            }
+        }
+        finally
+        {
+            if (_jumboImageList is not null) Marshal.ReleaseComObject(_jumboImageList);
+            if (_extraLargeImageList is not null) Marshal.ReleaseComObject(_extraLargeImageList);
+            _jumboImageList = null;
+            _extraLargeImageList = null;
+            _queue.Dispose();
         }
     }
 
@@ -259,6 +308,8 @@ public sealed class IconCache : IDisposable
         {
             _cache.Remove(oldestKey);
             _lastAccess.Remove(oldestKey);
+            if (_entryBytes.Remove(oldestKey, out var bytes)) _cachedBytes -= bytes;
+            _evictions++;
         }
     }
 
@@ -277,8 +328,42 @@ public sealed class IconCache : IDisposable
         // SIIGBF_BIGGERSIZEOK 保证源图不足 256 时 Shell 不做放大，返回的是真实原生图层，
         // 之后统一由 Resample 高质量缩放，避免任何一处在 Shell 侧被低质放大。
         var sourceSize = Math.Max(SourceSize, pixelSize);
-        var source = ExtractSource(path, sourceSize);
+        var source = NormalizeIconCanvas(ExtractSource(path, sourceSize));
         return Resample(source, pixelSize, dpiScale);
+    }
+
+    // Legacy EXEs can supply a 48px icon inside Shell's 256px canvas.
+    // Trim only excessive padding, preserving normal margins and aspect ratio.
+    private static BitmapSource NormalizeIconCanvas(BitmapSource source)
+    {
+        var bgra = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        var width = bgra.PixelWidth;
+        var height = bgra.PixelHeight;
+        var pixels = new byte[width * height * 4];
+        bgra.CopyPixels(pixels, width * 4, 0);
+        int left = width, top = height, right = -1, bottom = -1;
+        for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+            {
+                if (pixels[(y * width + x) * 4 + 3] < 8) continue;
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+
+        if (right < left || bottom < top) return source;
+        var contentSize = Math.Max(right - left + 1, bottom - top + 1);
+        if (contentSize >= Math.Max(width, height) * 0.65) return source;
+
+        var padding = Math.Max(1, (int)Math.Ceiling(contentSize * 0.04));
+        left = Math.Max(0, left - padding);
+        top = Math.Max(0, top - padding);
+        right = Math.Min(width - 1, right + padding);
+        bottom = Math.Min(height - 1, bottom + padding);
+        var cropped = new CroppedBitmap(source, new Int32Rect(left, top, right - left + 1, bottom - top + 1));
+        cropped.Freeze();
+        return cropped;
     }
 
     /// <summary>
@@ -393,9 +478,10 @@ public sealed class IconCache : IDisposable
     /// <summary>解析 .lnk 真实目标路径。</summary>
     private static string? ResolveLnkTarget(string lnkPath)
     {
+        IShellLinkW? link = null;
         try
         {
-            var link = (IShellLinkW)new CShellLink();
+            link = (IShellLinkW)new CShellLink();
             var store = (IPersistFile)link;
             store.Load(lnkPath, 0);
             var sb = new System.Text.StringBuilder(260);
@@ -405,6 +491,10 @@ public sealed class IconCache : IDisposable
         catch
         {
             return null;
+        }
+        finally
+        {
+            if (link is not null) Marshal.ReleaseComObject(link);
         }
     }
 
@@ -470,7 +560,7 @@ public sealed class IconCache : IDisposable
             return CloneBitmap(src);
         }
 
-        var cur = src;
+        var cur = CloneBitmap(src);
         var curW = src.Width;
         var curH = src.Height;
 
@@ -539,10 +629,11 @@ public sealed class IconCache : IDisposable
 
         try
         {
-            // 源图是 Pbgra32（预乘），但 GDI+ ARGB 是直通 Alpha —— 这里只做"通道拷贝 + 反预乘"，
-            // 让 GDI+ 在缩放时按"直通 Alpha"语义正确混合。
+            // Explicitly unpremultiply for GDI+; copying Pbgra32 bytes directly
+            // darkens translucent edges when they are premultiplied again later.
+            var straight = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
             var srcBytes = new byte[source.PixelWidth * source.PixelHeight * 4];
-            source.CopyPixels(System.Windows.Int32Rect.Empty, srcBytes, source.PixelWidth * 4, 0);
+            straight.CopyPixels(System.Windows.Int32Rect.Empty, srcBytes, source.PixelWidth * 4, 0);
 
             // WPF Pbgra32 字节序是 BGRA，与 GDI+ 32bppArgb（也是 BGRA）一致 —— 直接拷
             Marshal.Copy(srcBytes, 0, data.Scan0, srcBytes.Length);
@@ -556,7 +647,7 @@ public sealed class IconCache : IDisposable
     }
 
     /// <summary>把 GDI+ Bitmap 转为 WPF Pbgra32（预乘 Alpha）BitmapSource，带正确 DPI。</summary>
-    private static BitmapSource GdiBitmapToPbgra32(Bitmap bmp, double dpi)
+    private static BitmapSource GdiBitmapToPbgra32(Bitmap bmp, double dpi, bool detectPremultiplication = false)
     {
         var rect = new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height);
         var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, bmp.PixelFormat);
@@ -571,7 +662,7 @@ public sealed class IconCache : IDisposable
         }
 
         // GDI+ ARGB 是直通 Alpha：若不预乘，WPF Pbgra32 会按"未预乘"渲染 → 半透明边缘发黑/锯齿
-        PremultiplyAlphaInPlace(pixels);
+        PremultiplyAlphaInPlace(pixels, detectPremultiplication);
 
         var bmpSource = BitmapSource.Create(bmp.Width, bmp.Height, dpi, dpi, PixelFormats.Pbgra32, null, pixels, data.Stride);
         bmpSource.Freeze();
@@ -583,9 +674,11 @@ public sealed class IconCache : IDisposable
     /// 仅在确认为直通 Alpha 时执行（避免重复预乘导致边缘发暗），典型表现是
     /// 存在"半透明像素的 RGB 分量大于 Alpha"——一旦发现就整图预乘。
     /// </summary>
-    private static void PremultiplyAlphaInPlace(byte[] px)
+    private static void PremultiplyAlphaInPlace(byte[] px, bool detectPremultiplication = false)
     {
-        var straight = false;
+        // Resampled Format32bppArgb is known to be straight alpha, including dark
+        // colors whose RGB never exceeds alpha. Only raw Shell bitmaps need detection.
+        var straight = !detectPremultiplication;
         for (var i = 0; i + 3 < px.Length; i += 4)
         {
             var a = px[i + 3];
@@ -634,7 +727,7 @@ public sealed class IconCache : IDisposable
                 // 整条路径在后台 STA 线程上安全，不需要 Dispatcher。
                 using var gdi = System.Drawing.Image.FromHbitmap(hbmp);
                 if (gdi is not Bitmap bmp) return null;
-                return GdiBitmapToPbgra32(bmp, 96.0);
+                return GdiBitmapToPbgra32(bmp, 96.0, detectPremultiplication: true);
             }
             finally
             {
@@ -688,11 +781,20 @@ public sealed class IconCache : IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
-        _queue.CompleteAdding();
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _waiters.Clear();
+            _cache.Clear();
+            _lastAccess.Clear();
+            _entryBytes.Clear();
+            _cachedBytes = 0;
+            _queue.CompleteAdding();
+        }
     }
 
-    private record IconRequest(string Path, int PixelSize, double Scale, string Key);
+    private record IconRequest(string Path, int PixelSize, double Scale, string Key, List<Action<ImageSource>> Callbacks);
 
     // ===== P/Invoke =====
     private const uint SHGFI_ICON = 0x000000100;

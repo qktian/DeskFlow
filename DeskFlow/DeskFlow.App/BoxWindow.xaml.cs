@@ -7,39 +7,37 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using DeskFlow.App.Services;
 using DeskFlow.Core.Models;
+using DeskFlow.Core.Services;
 using DeskFlow.Shell;
 using Color = System.Windows.Media.Color;
 using ColorConverter = System.Windows.Media.ColorConverter;
 using Point = System.Windows.Point;
+using Size = System.Windows.Size;
 
 namespace DeskFlow.App;
 
 public partial class BoxWindow : Window
 {
     private const double TitleBarHeight = 30d;
-    private const double SnapThreshold = 14d;
     private const double EdgeRollThreshold = 8d;
     private const string ItemDataFormat = "DeskFlow.ItemPath";
     private const double DragThreshold = 5d;
-    private const double BoxSnapThreshold = 10d;
 
     private readonly BoxModel _model;
     private readonly BoxManager _manager;
 
-    private Border? _selectedElement;
     private string? _selectedPath;
+    private string? _selectionAnchor;
+    private readonly HashSet<string> _selectedPaths = new(StringComparer.OrdinalIgnoreCase);
     private Point? _dragStartPoint;
-    private Point? _dragOffset;
+    private readonly PanelInteraction _interaction;
     private bool _suppressModelUpdate;
 
     private System.Windows.Threading.DispatcherTimer? _dpiDebounce;
     private double _appliedDpiScale = -1;
-
-    // 缩放吸附状态（粘性吸附用）：记录当前吸附到的参考边坐标，拖到一半不因小抖动脱开
-    private double? _resizeSnapTop;
-    private double? _resizeSnapBottom;
-    private double? _resizeSnapLeft;
-    private double? _resizeSnapRight;
+    private int _itemsGeneration;
+    private List<FileItemViewModel> _viewItems = new();
+    private double _itemsViewportWidth;
 
     public BoxWindow(BoxModel model, BoxManager manager)
     {
@@ -47,6 +45,8 @@ public partial class BoxWindow : Window
 
         _model = model;
         _manager = manager;
+        _interaction = new PanelInteraction(this, () => _manager.Config.General);
+        TitleBar.LostMouseCapture += (_, _) => FinishMove();
 
         SourceInitialized += OnSourceInitialized;
         Deactivated += OnDeactivated;
@@ -91,8 +91,21 @@ public partial class BoxWindow : Window
         }
     }
 
-    /// <summary>条目外框宽 = 图标 + 左右留白。</summary>
+    /// <summary>条目外框的基准宽度；实际宽度由整行等宽列分配。</summary>
     public double ItemWidth => IconSize + 36;
+
+    /// <summary>条目的四周间距，同时用于列数计算，避免与 XAML 不一致。</summary>
+    public Thickness ItemMargin => new(3);
+
+    public static readonly DependencyProperty ItemColumnsProperty = DependencyProperty.Register(
+        nameof(ItemColumns), typeof(int), typeof(BoxWindow), new PropertyMetadata(1));
+
+    /// <summary>每行共享的列数，末行不足一行时也保留相同列宽。</summary>
+    public int ItemColumns
+    {
+        get => (int)GetValue(ItemColumnsProperty);
+        private set => SetValue(ItemColumnsProperty, value);
+    }
 
     /// <summary>条目外框高 = 图标 + 名称预留。</summary>
     public double ItemHeight => IconSize + 44;
@@ -104,8 +117,10 @@ public partial class BoxWindow : Window
         _suppressModelUpdate = true;
         try
         {
-            Left = _model.X;
-            Top = _model.Y;
+            var monitor = ScreenHelper.ForId(_model.ScreenId);
+            var desktop = monitor.ToDesktop(new Point(_model.X, _model.Y));
+            Left = desktop.X;
+            Top = desktop.Y;
             Width = Math.Max(160, _model.Width);
             Height = _model.Collapsed ? TitleBarHeight : Math.Max(120, _model.Height);
             ApplyStyle();
@@ -131,8 +146,11 @@ public partial class BoxWindow : Window
             return;
         }
 
-        _model.X = Left;
-        _model.Y = Top;
+        var monitor = ScreenHelper.FromWindow(this);
+        _model.ScreenId = monitor.Id;
+        var local = monitor.ToLocal(new Point(Left, Top));
+        _model.X = local.X;
+        _model.Y = local.Y;
         _model.Width = Width;
         if (!_model.Collapsed)
         {
@@ -158,6 +176,7 @@ public partial class BoxWindow : Window
 
     private void ApplyCollapsedState()
     {
+        var wasSuppressed = _suppressModelUpdate;
         _suppressModelUpdate = true;
         try
         {
@@ -169,7 +188,7 @@ public partial class BoxWindow : Window
         }
         finally
         {
-            _suppressModelUpdate = false;
+            _suppressModelUpdate = wasSuppressed;
         }
     }
 
@@ -246,6 +265,7 @@ public partial class BoxWindow : Window
 
     public void LoadItems()
     {
+        _itemsGeneration++;
         var items = new List<FileItemViewModel>();
         foreach (var path in _model.Items)
         {
@@ -255,13 +275,10 @@ public partial class BoxWindow : Window
             }
 
             _manager.Icons.TryGet(path, IconSize, out var icon, IconScale);
-            var vm = new FileItemViewModel(path, FileItem.GetDisplayName(path), icon);
+            var vm = new FileItemViewModel(path, FileItem.GetDisplayName(path), icon)
+            { IsSelected = _selectedPaths.Contains(path) };
             items.Add(vm);
 
-            if (icon is null)
-            {
-                RequestIcon(path);
-            }
         }
 
         IEnumerable<FileItemViewModel> ordered = _model.View.SortBy switch
@@ -270,33 +287,75 @@ public partial class BoxWindow : Window
                 .OrderBy(v => Path.GetExtension(v.Path), StringComparer.OrdinalIgnoreCase)
                 .ThenBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase),
             SortMode.ModifiedAt => items
-                .OrderByDescending(v => SafeTime(v.Path))
+                .OrderByDescending(v => FileMetadataCache.Get(v.Path).ModifiedAt)
                 .ThenBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase),
             SortMode.Size => items
-                .OrderByDescending(v => SafeSize(v.Path))
+                .OrderByDescending(v => FileMetadataCache.Get(v.Path).Size)
                 .ThenBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase),
             _ => items.OrderBy(v => v.Name, StringComparer.CurrentCultureIgnoreCase)
         };
 
         var view = ordered.ToList();
-        ItemsHost.ItemsSource = null;
-        ItemsHost.ItemsSource = view;
+        _viewItems = view;
+        RebuildVisibleRows();
 
         TitleText.Text = _model.Name;
         EmptyHint.Visibility = view.Count == 0 && !_model.Collapsed ? Visibility.Visible : Visibility.Collapsed;
 
-        _selectedElement = null;
+        _selectedPaths.IntersectWith(view.Select(v => v.Path));
         _selectedPath = null;
+    }
+
+    // Virtualize rows instead of allocating an icon control for every desktop item.
+    // Only realized rows request shell icons; resizing changes the number of columns.
+    private void RebuildVisibleRows()
+    {
+        // 首次布局前按明确的边框/边距估算；布局后使用 ScrollViewer 的真实视口。
+        // 隐藏的滚动条不占宽度，不能再额外扣除 16 DIP。
+        var width = _itemsViewportWidth > 0 ? _itemsViewportWidth : Math.Max(0,
+            Width - Frame.BorderThickness.Left - Frame.BorderThickness.Right
+            - ItemsScroll.Margin.Left - ItemsScroll.Margin.Right
+            - ItemsScroll.Padding.Left - ItemsScroll.Padding.Right);
+        ItemColumns = CalculateItemColumns(width);
+        ItemsScroll.ItemsSource = _viewItems.Chunk(ItemColumns).ToList();
+    }
+
+    private int CalculateItemColumns(double viewportWidth)
+    {
+        var cellWidth = ItemWidth + ItemMargin.Left + ItemMargin.Right;
+        return BoxItemLayout.CalculateColumns(viewportWidth, cellWidth);
+    }
+
+    private void ItemsScroll_OnScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.OriginalSource is not ScrollViewer || !double.IsFinite(e.ViewportWidth) || e.ViewportWidth <= 0)
+            return;
+
+        _itemsViewportWidth = e.ViewportWidth;
+        // 同一列数内仅由布局系统均分宽度，不重建条目或重新触发图标加载。
+        if (CalculateItemColumns(_itemsViewportWidth) != ItemColumns) RebuildVisibleRows();
+    }
+
+    private void Item_OnLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: FileItemViewModel vm } || vm.Icon is not null) return;
+        _manager.Icons.TryGet(vm.Path, IconSize, out var image, IconScale);
+        if (image is not null) vm.Icon = image;
+        else RequestIcon(vm.Path);
     }
 
     /// <summary>向后台图标线程排队提取，完成后切回 UI 线程回填。</summary>
     private void RequestIcon(string path)
     {
+        var generation = _itemsGeneration;
         _manager.Icons.GetAsync(path, IconSize, source =>
         {
             try
             {
-                Dispatcher.BeginInvoke(new Action(() => ApplyIcon(path, source)));
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (generation == _itemsGeneration) ApplyIcon(path, source);
+                }));
             }
             catch
             {
@@ -307,12 +366,7 @@ public partial class BoxWindow : Window
 
     private void ApplyIcon(string path, ImageSource source)
     {
-        if (ItemsHost.ItemsSource is not IEnumerable<FileItemViewModel> view)
-        {
-            return;
-        }
-
-        foreach (var vm in view)
+        foreach (var vm in _viewItems)
         {
             if (vm.Path.Equals(path, StringComparison.OrdinalIgnoreCase))
             {
@@ -322,178 +376,65 @@ public partial class BoxWindow : Window
         }
     }
 
-    private static DateTime SafeTime(string path)
-    {
-        try
-        {
-            return Directory.Exists(path)
-                ? Directory.GetLastWriteTime(path)
-                : File.GetLastWriteTime(path);
-        }
-        catch
-        {
-            return DateTime.MinValue;
-        }
-    }
-
-    private static long SafeSize(string path)
-    {
-        try
-        {
-            return Directory.Exists(path) ? 0L : new FileInfo(path).Length;
-        }
-        catch
-        {
-            return 0L;
-        }
-    }
-
     // ---------- 拖动与缩放 ----------
 
     private void TitleBar_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ClickCount > 1 || IsTitleBarButton(e))
+        if (e.ClickCount > 1 || PanelInteraction.IsTitleButton(e.OriginalSource as DependencyObject))
         {
             return;
         }
 
-        _dragOffset = e.GetPosition(this);
+        _interaction.Begin(resize: false);
         TitleBar.CaptureMouse();
         e.Handled = true;
     }
 
     private void TitleBar_OnMouseMove(object sender, MouseEventArgs e)
     {
-        if (_dragOffset is null || e.LeftButton != MouseButtonState.Pressed)
+        if (!_interaction.Moving || e.LeftButton != MouseButtonState.Pressed)
         {
             return;
         }
 
-        var pos = e.GetPosition(this);
-        var x = Left + (pos.X - _dragOffset.Value.X);
-        var y = Top + (pos.Y - _dragOffset.Value.Y);
-        (x, y) = ApplyBoxSnap(x, y);
-        Left = x;
-        Top = y;
+        ApplyInteractionBounds(_interaction.Move());
         e.Handled = true;
     }
 
     private void TitleBar_OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (_dragOffset is null)
-        {
-            return;
-        }
-
-        _dragOffset = null;
-        TitleBar.ReleaseMouseCapture();
-        OnDragCompleted();
+        FinishMove();
         e.Handled = true;
     }
 
-    private static bool IsTitleBarButton(MouseButtonEventArgs e)
+    private void FinishMove()
     {
-        var current = e.OriginalSource as DependencyObject;
-        while (current is not null)
-        {
-            if (current is Button)
-            {
-                return true;
-            }
-
-            current = VisualTreeHelper.GetParent(current);
-        }
-
-        return false;
+        if (!_interaction.Moving) return;
+        _interaction.End();
+        TitleBar.ReleaseMouseCapture();
+        OnDragCompleted();
     }
 
-    /// <summary>拖动时检测与相邻盒子的左/右/中、上/下/中参考线，距离在阈值内则贴齐。</summary>
-    private (double x, double y) ApplyBoxSnap(double x, double y)
+    private void ApplyInteractionBounds(Rect bounds)
     {
-        if (!_manager.Config.General.SnapBoxes)
+        _suppressModelUpdate = true;
+        try
         {
-            return (x, y);
+            Left = bounds.Left;
+            Top = bounds.Top;
+            Width = bounds.Width;
+            Height = bounds.Height;
         }
-
-        var width = Width;
-        var height = Height;
-        var bestDx = BoxSnapThreshold + 1;
-        var bestDy = BoxSnapThreshold + 1;
-        var dx = 0d;
-        var dy = 0d;
-
-        foreach (var other in _manager.Windows)
-        {
-            if (ReferenceEquals(other, this))
-            {
-                continue;
-            }
-
-            var ox = other.Left;
-            var oy = other.Top;
-            var ow = other.Width;
-            var oh = other.Height;
-
-            foreach (var cur in new[] { x, x + (width / 2), x + width })
-            {
-                foreach (var target in new[] { ox, ox + (ow / 2), ox + ow })
-                {
-                    var diff = Math.Abs(cur - target);
-                    if (diff < bestDx)
-                    {
-                        bestDx = diff;
-                        dx = target - cur;
-                    }
-                }
-            }
-
-            foreach (var cur in new[] { y, y + (height / 2), y + height })
-            {
-                foreach (var target in new[] { oy, oy + (oh / 2), oy + oh })
-                {
-                    var diff = Math.Abs(cur - target);
-                    if (diff < bestDy)
-                    {
-                        bestDy = diff;
-                        dy = target - cur;
-                    }
-                }
-            }
-        }
-
-        return (bestDx <= BoxSnapThreshold ? x + dx : x,
-                bestDy <= BoxSnapThreshold ? y + dy : y);
+        finally { _suppressModelUpdate = false; }
+        SyncToModel();
     }
 
     private void OnDragCompleted()
     {
         var center = new Point(Left + (Width / 2), Top + (Height / 2));
-        var monitor = ScreenHelper.FromPoint(center);
+        var monitor = ScreenHelper.FromWindow(this);
         _model.ScreenId = monitor.Id;
         var area = monitor.WorkArea;
-
-        if (_manager.Config.General.SnapToScreenEdge)
-        {
-            if (Math.Abs(Left - area.Left) <= SnapThreshold)
-            {
-                Left = area.Left;
-            }
-
-            if (Math.Abs(Top - area.Top) <= SnapThreshold)
-            {
-                Top = area.Top;
-            }
-
-            if (Math.Abs(Left + Width - area.Right) <= SnapThreshold)
-            {
-                Left = area.Right - Width;
-            }
-
-            if (Math.Abs(Top + Height - area.Bottom) <= SnapThreshold)
-            {
-                Top = area.Bottom - Height;
-            }
-        }
 
         if (_manager.Config.General.EdgeRoll && !_model.Collapsed)
         {
@@ -528,178 +469,28 @@ public partial class BoxWindow : Window
         LoadItems();
     }
 
-    private void ThumbTop_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(0, -e.VerticalChange, false, true);
+    private void ThumbTop_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Top);
+    private void ThumbBottom_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Bottom);
+    private void ThumbLeft_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Left);
+    private void ThumbRight_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Right);
+    private void ThumbBottomRight_OnDragDelta(object sender, DragDeltaEventArgs e) => ResizePanel(ResizeEdges.Bottom | ResizeEdges.Right);
 
-    private void ThumbBottom_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(0, e.VerticalChange, false, false);
-
-    private void ThumbLeft_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(-e.HorizontalChange, 0, true, false);
-
-    private void ThumbRight_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(e.HorizontalChange, 0, false, false);
-
-    private void ThumbBottomRight_OnDragDelta(object sender, DragDeltaEventArgs e) => Resize(e.HorizontalChange, e.VerticalChange, false, false);
+    private void Thumb_OnDragStarted(object sender, DragStartedEventArgs e)
+    {
+        if (!_model.Collapsed) _interaction.Begin(resize: true);
+    }
 
     private void Thumb_OnDragCompleted(object sender, DragCompletedEventArgs e)
     {
-        _resizeSnapTop = null;
-        _resizeSnapBottom = null;
-        _resizeSnapLeft = null;
-        _resizeSnapRight = null;
+        _interaction.End();
         SyncToModel();
         _manager.Save();
     }
 
-    /// <summary>
-    /// 调整盒子尺寸，吸附逻辑为「边缘对齐」：
-    /// - 拖动的是上/下边 → 该边与其它所有盒子的上边缘 / 下边缘对齐；
-    /// - 拖动的是左/右边 → 该边与其它所有盒子的左边缘 / 右边缘对齐；
-    /// - 采用粘性吸附：一旦吸附到某条参考边，小幅继续拖动不会脱开（需偏离超过 阈值×2.5 才解除），
-    ///   避免因鼠标微小抖动导致刚吸附就弹开、感觉不明显。
-    /// </summary>
-    private void Resize(double deltaWidth, double deltaHeight, bool moveLeft, bool moveTop)
+    private void ResizePanel(ResizeEdges edges)
     {
-        if (_model.Collapsed)
-        {
-            return;
-        }
-
-        var newHeight = Math.Clamp(Height + deltaHeight, 120, 1000);
-        var newWidth = Math.Clamp(Width + deltaWidth, 160, 1200);
-
-        double top, bottom, height;
-        if (moveTop)
-        {
-            // 下边缘固定不动，上边缘随鼠标移动并吸附到其它盒子的上/下边缘
-            bottom = Top + Height;
-            top = bottom - newHeight;
-            top = SnapEdgeVertical(top, ref _resizeSnapTop);
-            height = Math.Clamp(bottom - top, 120, 1000);
-            top = bottom - height;
-        }
-        else
-        {
-            // 上边缘固定不动，下边缘随鼠标移动并吸附
-            top = Top;
-            bottom = top + newHeight;
-            bottom = SnapEdgeVertical(bottom, ref _resizeSnapBottom);
-            height = Math.Clamp(bottom - top, 120, 1000);
-            bottom = top + height;
-        }
-
-        double left, right, width;
-        if (moveLeft)
-        {
-            // 右边缘固定不动，左边缘随鼠标移动并吸附
-            right = Left + Width;
-            left = right - newWidth;
-            left = SnapEdgeHorizontal(left, ref _resizeSnapLeft);
-            width = Math.Clamp(right - left, 160, 1200);
-            left = right - width;
-        }
-        else
-        {
-            // 左边缘固定不动，右边缘随鼠标移动并吸附
-            left = Left;
-            right = left + newWidth;
-            right = SnapEdgeHorizontal(right, ref _resizeSnapRight);
-            width = Math.Clamp(right - left, 160, 1200);
-            right = left + width;
-        }
-
-        Left = left;
-        Top = top;
-        Width = width;
-        Height = height;
-    }
-
-    /// <summary>开始拖缩放手柄：重置吸附状态，避免上一次会话的吸附目标残留。</summary>
-    private void Thumb_OnDragStarted(object sender, DragStartedEventArgs e)
-    {
-        _resizeSnapTop = null;
-        _resizeSnapBottom = null;
-        _resizeSnapLeft = null;
-        _resizeSnapRight = null;
-    }
-
-    /// <summary>把竖直方向的边吸附到其它盒子的上/下边缘（粘性）。</summary>
-    private double SnapEdgeVertical(double y, ref double? snapTarget)
-    {
-        if (snapTarget is double held && Math.Abs(y - held) < BoxSnapThreshold * 2.5)
-        {
-            return held;
-        }
-
-        snapTarget = null;
-        double? best = null;
-        var bestDiff = BoxSnapThreshold;
-        foreach (var other in _manager.Windows)
-        {
-            if (ReferenceEquals(other, this))
-            {
-                continue;
-            }
-
-            Consider(other.Top);              // 其它盒子的上边缘
-            Consider(other.Top + other.Height); // 其它盒子的下边缘
-        }
-
-        if (best is double b)
-        {
-            snapTarget = b;
-            return b;
-        }
-
-        return y;
-
-        void Consider(double candidate)
-        {
-            var d = Math.Abs(y - candidate);
-            if (d < bestDiff)
-            {
-                bestDiff = d;
-                best = candidate;
-            }
-        }
-    }
-
-    /// <summary>把水平方向的边吸附到其它盒子的左/右边缘（粘性）。</summary>
-    private double SnapEdgeHorizontal(double x, ref double? snapTarget)
-    {
-        if (snapTarget is double held && Math.Abs(x - held) < BoxSnapThreshold * 2.5)
-        {
-            return held;
-        }
-
-        snapTarget = null;
-        double? best = null;
-        var bestDiff = BoxSnapThreshold;
-        foreach (var other in _manager.Windows)
-        {
-            if (ReferenceEquals(other, this))
-            {
-                continue;
-            }
-
-            Consider(other.Left);               // 其它盒子的左边缘
-            Consider(other.Left + other.Width); // 其它盒子的右边缘
-        }
-
-        if (best is double b)
-        {
-            snapTarget = b;
-            return b;
-        }
-
-        return x;
-
-        void Consider(double candidate)
-        {
-            var d = Math.Abs(x - candidate);
-            if (d < bestDiff)
-            {
-                bestDiff = d;
-                best = candidate;
-            }
-        }
+        if (_model.Collapsed || !_interaction.Resizing) return;
+        ApplyInteractionBounds(_interaction.Resize(edges, new Size(160, 120), new Size(1200, 1000)));
     }
 
     // ---------- 条目交互 ----------
@@ -711,20 +502,27 @@ public partial class BoxWindow : Window
             return;
         }
 
-        if (_selectedElement is not null)
+        var modifiers = Keyboard.Modifiers;
+        if (modifiers.HasFlag(ModifierKeys.Shift) && _selectionAnchor is not null)
         {
-            _selectedElement.Background = new SolidColorBrush(Color.FromArgb(0x0F, 0xFF, 0xFF, 0xFF));
-            if (_selectedElement.Tag is FileItemViewModel oldVm)
+            var from = _viewItems.FindIndex(v => v.Path.Equals(_selectionAnchor, StringComparison.OrdinalIgnoreCase));
+            var to = _viewItems.FindIndex(v => v.Path.Equals(vm.Path, StringComparison.OrdinalIgnoreCase));
+            if (from >= 0 && to >= 0)
             {
-                oldVm.IsNameVisible = false;
+                if (!modifiers.HasFlag(ModifierKeys.Control)) _selectedPaths.Clear();
+                foreach (var row in _viewItems.Skip(Math.Min(from, to)).Take(Math.Abs(to - from) + 1)) _selectedPaths.Add(row.Path);
             }
         }
+        else if (modifiers.HasFlag(ModifierKeys.Control))
+        {
+            if (!_selectedPaths.Add(vm.Path)) _selectedPaths.Remove(vm.Path);
+            _selectionAnchor = vm.Path;
+        }
+        else { _selectedPaths.Clear(); _selectedPaths.Add(vm.Path); _selectionAnchor = vm.Path; }
+        foreach (var row in _viewItems) { row.IsSelected = _selectedPaths.Contains(row.Path); row.IsNameVisible = row.IsSelected; }
 
-        _selectedElement = element;
-        _selectedPath = vm.Path;
+        _selectedPath = _selectedPaths.Contains(vm.Path) ? vm.Path : null;
         _dragStartPoint = e.GetPosition(element);
-        element.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
-        vm.IsNameVisible = true;
 
         if (e.ClickCount == 2)
         {
@@ -756,8 +554,9 @@ public partial class BoxWindow : Window
         _dragStartPoint = null;
 
         var data = new DataObject();
-        data.SetData(ItemDataFormat, _selectedPath);
-        data.SetData(DataFormats.FileDrop, new[] { _selectedPath });
+        var dragged = _selectedPaths.Count > 0 ? _selectedPaths.ToArray() : new[] { _selectedPath };
+        data.SetData(ItemDataFormat, dragged);
+        data.SetData(DataFormats.FileDrop, dragged);
 
         DragDrop.DoDragDrop(element, data, DragDropEffects.Copy | DragDropEffects.Move);
     }
@@ -773,7 +572,7 @@ public partial class BoxWindow : Window
     private void Item_OnMouseLeave(object sender, MouseEventArgs e)
     {
         if (sender is FrameworkElement { Tag: FileItemViewModel vm } &&
-            !string.Equals(vm.Path, _selectedPath, StringComparison.OrdinalIgnoreCase))
+            !vm.IsSelected)
         {
             vm.IsNameVisible = false;
         }
@@ -786,7 +585,30 @@ public partial class BoxWindow : Window
             return;
         }
 
+        if (!_selectedPaths.Contains(vm.Path))
+        {
+            _selectedPaths.Clear(); _selectedPaths.Add(vm.Path);
+            foreach (var row in _viewItems) row.IsSelected = row.Path.Equals(vm.Path, StringComparison.OrdinalIgnoreCase);
+        }
+
         var menu = new ContextMenu { PlacementTarget = element };
+
+        AddMenuItem(menu, "为何归入此盒子…", () => MessageBox.Show(_manager.ExplainItem(_model, vm.Path), "归类依据"));
+        if (_selectedPaths.Count > 1)
+        {
+            var paths = _selectedPaths.ToArray();
+            var move = new MenuItem { Header = $"移动选中 {paths.Length} 项到" };
+            foreach (var box in _manager.Config.Boxes.Where(b => b.Id != _model.Id && b.Kind != BoxKind.Portal))
+            {
+                var target = box;
+                var item = new MenuItem { Header = target.Name };
+                item.Click += (_, _) => _manager.AddItemsToBox(target.Id, paths, manual: true);
+                move.Items.Add(item);
+            }
+            menu.Items.Add(move);
+            AddMenuItem(menu, $"移出选中 {paths.Length} 项", () => _manager.RemoveItemsFromBox(_model.Id, paths));
+            menu.Items.Add(new Separator());
+        }
 
         // 回收站快捷方式：把系统桌面原有的「清空回收站」加回来
         if (FileOperationService.IsRecycleBinShortcut(vm.Path))
@@ -808,7 +630,7 @@ public partial class BoxWindow : Window
                 return;
             }
 
-            FileOperationService.MoveToRecycleBin(vm.Path);
+            if (!FileOperationService.MoveToRecycleBin(vm.Path)) return;
             _manager.RemoveItem(vm.Path);
             _manager.AssignNewItems();
         });
@@ -832,13 +654,15 @@ public partial class BoxWindow : Window
             return;
         }
 
-        if (!FileOperationService.Rename(path, newName))
+        var renamedPath = FileOperationService.Rename(path, newName);
+        if (renamedPath is null)
         {
             return;
         }
 
-        _manager.RemoveItem(path);
-        _manager.AssignNewItems();
+        _manager.RenameItem(path, renamedPath);
+        _manager.Refresh();
+        _manager.Save();
     }
 
     // ---------- 拖放 ----------
@@ -852,19 +676,16 @@ public partial class BoxWindow : Window
 
     private void ItemsScroll_OnDrop(object sender, DragEventArgs e)
     {
-        if (e.Data.GetDataPresent(ItemDataFormat) && e.Data.GetData(ItemDataFormat) is string internalPath)
+        if (e.Data.GetDataPresent(ItemDataFormat) && e.Data.GetData(ItemDataFormat) is string[] internalPaths)
         {
-            _manager.AddItemToBox(_model.Id, internalPath, manual: true);
+            _manager.AddItemsToBox(_model.Id, internalPaths, manual: true);
             e.Handled = true;
             return;
         }
 
         if (e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] files)
         {
-            foreach (var file in files)
-            {
-                _manager.AddItemToBox(_model.Id, file, manual: true);
-            }
+            _manager.AddItemsToBox(_model.Id, files, manual: true);
 
             e.Handled = true;
         }
@@ -931,6 +752,12 @@ public partial class BoxWindow : Window
         menu.Items.Add(new Separator());
 
         AddMenuItem(menu, "按规则整理全部盒子", () => _manager.OrganizeAll());
+        AddMenuItem(menu, "撤销上次整理", () => _manager.UndoOrganize());
+        AddMenuItem(menu, "全选盒内条目", () =>
+        {
+            _selectedPaths.Clear();
+            foreach (var vm in _viewItems) { _selectedPaths.Add(vm.Path); vm.IsSelected = true; }
+        });
         AddMenuItem(menu, "清空回收站…", () => RecycleBinActions.ShowEmptyRecycleBinDialog());
         AddMenuItem(menu, "新建盒子…", () =>
         {

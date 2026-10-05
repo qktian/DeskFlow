@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Threading;
 using DeskFlow.Core.Models;
 using DeskFlow.Core.Services;
 using DeskFlow.Shell;
@@ -14,10 +15,12 @@ public sealed class TodoManager : IDisposable
     private readonly List<TodoBoardWindow> _windows = new();
     private bool _visible = true;
     private bool _disposed;
+    private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMinutes(1) };
 
     public TodoManager(AppConfig config)
     {
         _config = config;
+        _clock.Tick += (_, _) => RefreshAll();
     }
 
     public IReadOnlyList<TodoBoardWindow> Windows => _windows;
@@ -40,12 +43,14 @@ public sealed class TodoManager : IDisposable
             model.Normalize();
             OpenWindow(model);
         }
+        EnsureOnScreen();
+        _clock.Start();
     }
 
     /// <summary>新建一个待办组件（在右下角附近层叠摆放）。</summary>
     public TodoBoardWindow AddBoard(string? name = null)
     {
-        var primary = ScreenHelper.Primary;
+        var primary = ScreenHelper.ForId(_config.General.PreferredMonitorId);
         var area = primary.WorkArea;
 
         var model = new TodoBoardModel
@@ -53,8 +58,8 @@ public sealed class TodoManager : IDisposable
             Name = string.IsNullOrWhiteSpace(name) ? "待办事项" : name.Trim(),
             Width = 300,
             Height = 400,
-            X = Math.Max(area.Left + 12, area.Right - 320 - (_config.TodoBoards.Count % 5) * 24),
-            Y = area.Top + 48 + (_config.TodoBoards.Count % 5) * 28,
+            X = Math.Max(12, area.Width - 320 - (_config.TodoBoards.Count % 5) * 24),
+            Y = 48 + (_config.TodoBoards.Count % 5) * 28,
             ScreenId = primary.Id
         };
 
@@ -68,6 +73,7 @@ public sealed class TodoManager : IDisposable
     {
         var window = new TodoBoardWindow(model, this);
         window.Show();
+        window.Visibility = _visible ? Visibility.Visible : Visibility.Hidden;
         _windows.Add(window);
         return window;
     }
@@ -96,11 +102,40 @@ public sealed class TodoManager : IDisposable
         }
     }
 
+    public void RebuildFromConfig()
+    {
+        foreach (var window in _windows.ToList()) window.Close();
+        _windows.Clear();
+        foreach (var board in _config.TodoBoards) OpenWindow(board);
+        EnsureOnScreen();
+    }
+
     public void ToggleVisible() => SetVisible(!_visible);
+
+    public void EnsureOnScreen()
+    {
+        var monitors = ScreenHelper.GetMonitors();
+        foreach (var window in _windows)
+        {
+            var model = window.Model;
+            var monitor = monitors.FirstOrDefault(m => m.Id == model.ScreenId)
+                ?? ScreenHelper.ForId(_config.General.PreferredMonitorId);
+            var rect = new Rect(monitor.WorkArea.Left + model.X, monitor.WorkArea.Top + model.Y,
+                model.Width, model.Collapsed ? 32 : model.Height);
+            var clamped = ScreenHelper.ClampToMonitor(rect, monitor);
+            model.X = clamped.X - monitor.WorkArea.Left;
+            model.Y = clamped.Y - monitor.WorkArea.Top;
+            model.Width = clamped.Width;
+            if (!model.Collapsed) model.Height = clamped.Height;
+            model.ScreenId = monitor.Id;
+            window.ApplyModel();
+        }
+    }
 
     public void SetVisible(bool visible)
     {
         _visible = visible;
+        if (visible) RefreshAll();
         foreach (var window in _windows)
         {
             window.Visibility = visible ? Visibility.Visible : Visibility.Hidden;
@@ -114,6 +149,7 @@ public sealed class TodoManager : IDisposable
             return;
         }
 
+        _clock.Stop();
         foreach (var window in _windows.ToList())
         {
             window.Close();

@@ -5,6 +5,8 @@ namespace DeskFlow.Core.Services;
 
 public static class ConfigService
 {
+    private static readonly object SaveLock = new();
+    public static event Action<Exception>? SaveFailed;
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
@@ -18,55 +20,92 @@ public static class ConfigService
 
     public static string BackupPath => Path.Combine(ConfigDirectory, "config.bak.json");
 
-    public static AppConfig Load()
+    public static AppConfig Load(string? directory = null)
     {
+        directory ??= ConfigDirectory;
+        var configPath = Path.Combine(directory, "config.json");
+        var backupPath = Path.Combine(directory, "config.bak.json");
         try
         {
-            Directory.CreateDirectory(ConfigDirectory);
+            Directory.CreateDirectory(directory);
 
             AppConfig? config = null;
-            if (File.Exists(ConfigPath))
+            if (File.Exists(configPath))
             {
-                config = TryDeserialize(ConfigPath);
+                config = TryDeserialize(configPath);
             }
 
-            if (config is null && File.Exists(BackupPath))
+            if (config is null && File.Exists(backupPath))
             {
-                config = TryDeserialize(BackupPath);
+                config = TryDeserialize(backupPath);
+                DiagnosticLog.Info("Config", config is null ? "Backup unreadable." : "Loaded backup configuration.");
             }
 
             if (config is null)
             {
                 config = CreateDefault();
-                Save(config);
+                Save(config, directory);
             }
 
             EnsureIntegrity(config);
             return config;
         }
-        catch
+        catch (Exception error)
         {
+            DiagnosticLog.Error("Config", "Load failed; using defaults", error);
             return CreateDefault();
         }
     }
 
-    public static void Save(AppConfig config)
+    public static bool Save(AppConfig config, string? directory = null)
     {
+        directory ??= ConfigDirectory;
+        string? temporaryPath = null;
         try
         {
-            Directory.CreateDirectory(ConfigDirectory);
-
-            if (File.Exists(ConfigPath))
+            lock (SaveLock)
             {
-                File.Copy(ConfigPath, BackupPath, true);
-            }
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, "config.json");
+                var backup = Path.Combine(directory, "config.bak.json");
+                var json = JsonSerializer.Serialize(config, SerializerOptions);
+                // Frequent refreshes often leave the configuration unchanged.
+                if (File.Exists(path) && File.ReadAllText(path) == json) return true;
 
-            var json = JsonSerializer.Serialize(config, SerializerOptions);
-            File.WriteAllText(ConfigPath, json);
+                temporaryPath = Path.Combine(directory, $"config.{Guid.NewGuid():N}.tmp");
+                using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                    stream.Write(bytes);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                if (File.Exists(path))
+                {
+                    // Never overwrite the last good backup with a corrupt primary.
+                    var validPrimary = TryDeserialize(path) is not null;
+                    File.Replace(temporaryPath, path, validPrimary ? backup : null);
+                }
+                else
+                {
+                    File.Move(temporaryPath, path);
+                }
+                temporaryPath = null;
+                return true;
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            // 配置写入失败不阻断主流程
+            DiagnosticLog.Error("Config", "Save failed; previous configuration retained", ex);
+            SaveFailed?.Invoke(ex);
+            return false;
+        }
+        finally
+        {
+            if (temporaryPath is not null)
+            {
+                try { File.Delete(temporaryPath); } catch { /* Keep the original save error. */ }
+            }
         }
     }
 
@@ -75,10 +114,13 @@ public static class ConfigService
         try
         {
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<AppConfig>(json, SerializerOptions);
+            var config = JsonSerializer.Deserialize<AppConfig>(json, SerializerOptions);
+            if (config is not null) EnsureIntegrity(config);
+            return config;
         }
-        catch
+        catch (Exception error)
         {
+            DiagnosticLog.Error("Config", "Could not read configuration", error);
             return null;
         }
     }
@@ -94,12 +136,48 @@ public static class ConfigService
         config.General ??= new GeneralSettings();
         config.General.Hotkeys ??= new HotkeySettings();
 
+        config.Boxes.RemoveAll(b => b is null);
+        config.TodoBoards.RemoveAll(b => b is null);
+        config.Rules.RemoveAll(r => r is null);
+        config.Snapshots.RemoveAll(s => s is null);
+        config.ExcludedPaths.RemoveAll(string.IsNullOrWhiteSpace);
+        foreach (var rule in config.Rules)
+        {
+            rule.Extensions = (rule.Extensions ?? new()).Where(e => !string.IsNullOrWhiteSpace(e))
+                .Select(e => e.Trim().TrimStart('.').ToLowerInvariant()).Distinct().ToList();
+            rule.NameKeywords = (rule.NameKeywords ?? new()).Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
+        }
+        foreach (var snapshot in config.Snapshots)
+        {
+            snapshot.Boxes ??= new();
+            snapshot.TodoLayouts ??= new();
+            snapshot.ExcludedPaths ??= new();
+            snapshot.Boxes.RemoveAll(b => b is null);
+            snapshot.TodoLayouts.RemoveAll(b => b is null);
+            snapshot.ExcludedPaths.RemoveAll(string.IsNullOrWhiteSpace);
+            foreach (var box in snapshot.Boxes)
+            {
+                box.Items ??= new();
+                box.ManualItems ??= new();
+                box.Items.RemoveAll(string.IsNullOrWhiteSpace);
+                box.ManualItems.RemoveAll(string.IsNullOrWhiteSpace);
+                if (box.Layout is not null) box.Layout.Style ??= new BoxStyle();
+            }
+            foreach (var board in snapshot.TodoLayouts)
+            {
+                board.Layout ??= new PanelLayoutSnapshot();
+                board.Layout.Style ??= new BoxStyle();
+            }
+        }
+
         foreach (var box in config.Boxes)
         {
             box.Style ??= new BoxStyle();
             box.View ??= new BoxView();
             box.Items ??= new List<string>();
             box.ManualItems ??= new List<string>();
+            box.Items.RemoveAll(string.IsNullOrWhiteSpace);
+            box.ManualItems.RemoveAll(string.IsNullOrWhiteSpace);
             box.Normalize();
         }
 
@@ -126,7 +204,7 @@ public static class ConfigService
 
     public static AppConfig CreateDefault()
     {
-        var config = new AppConfig();
+        var config = new AppConfig { Version = 2 };
 
         var names = new[] { "文件夹", "快捷方式", "文档", "图片", "视频", "音乐", "压缩包", "安装包" };
         foreach (var name in names)
@@ -140,6 +218,40 @@ public static class ConfigService
         config.Rules = RuleEngine.CreateDefaultRules(idByName);
 
         return config;
+    }
+
+    public static AppConfig? LoadBackup(string? directory = null)
+    {
+        directory ??= ConfigDirectory;
+        try
+        {
+            var candidate = TryDeserialize(Path.Combine(directory, "config.bak.json"));
+            if (candidate is null) return null;
+            EnsureIntegrity(candidate);
+            return candidate;
+        }
+        catch (Exception error) { DiagnosticLog.Error("Config", "Backup load failed", error); return null; }
+    }
+
+    public static bool RestoreBackup(out Exception? error, string? directory = null)
+    {
+        directory ??= ConfigDirectory;
+        error = null;
+        try
+        {
+            var candidate = LoadBackup(directory) ?? throw new InvalidDataException("配置备份不存在或无法读取。");
+            Directory.CreateDirectory(directory);
+            var current = Path.Combine(directory, "config.json");
+            if (File.Exists(current))
+            {
+                var restorePoint = Path.Combine(directory, $"config.before-restore-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+                File.Copy(current, restorePoint, overwrite: false);
+            }
+            if (!Save(candidate, directory)) throw new IOException("备份配置无法写入，请检查磁盘空间和目录权限。");
+            DiagnosticLog.Info("Config", $"Restored backup config version {candidate.Version}.");
+            return true;
+        }
+        catch (Exception failure) { error = failure; DiagnosticLog.Error("Config", "Backup restore failed", failure); return false; }
     }
 
     private static BoxModel CreateBox(string name, BoxKind kind)
