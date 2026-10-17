@@ -488,6 +488,7 @@ public partial class TodoBoardWindow : Window
 
     private void EditTask(TodoItemModel item)
     {
+        var previouslyDone = ItemDone(item);
         var editor = new TodoTaskEditorWindow(item) { Owner = this };
         if (editor.ShowDialog() == true && editor.Result is TodoItemModel edited)
         {
@@ -499,6 +500,7 @@ public partial class TodoBoardWindow : Window
 
             Reload();
             _manager.Save();
+            if (!previouslyDone && ItemDone(edited)) MissionCompleteEffect.Play(this);
         }
     }
 
@@ -537,6 +539,7 @@ public partial class TodoBoardWindow : Window
 
     private void ToggleTask(TodoItemModel item)
     {
+        var previouslyDone = ItemDone(item);
         if (item.Kind == TodoKind.Normal)
         {
             item.Completed = !item.Completed;
@@ -553,6 +556,7 @@ public partial class TodoBoardWindow : Window
 
         Reload();
         _manager.Save();
+        if (!previouslyDone && ItemDone(item)) MissionCompleteEffect.Play(this);
     }
 
     /// <summary>打开循环任务的「当月日历打卡」窗口。</summary>
@@ -630,6 +634,7 @@ public partial class TodoBoardWindow : Window
             AddMenu(menu, "编辑…", () => EditTask(vm.Model));
         }
 
+        AddMenu(menu, "用番茄钟专注此任务…", () => _manager.RequestPomodoro(vm.Model));
         AddMenu(menu, "添加子任务…", () => AddSubTask(vm.Model));
         AddMenu(menu, IsDoneVm(vm) ? "标记为未完成" : "标记为已完成", () => ToggleTask(vm.Model));
 
@@ -655,6 +660,7 @@ public partial class TodoBoardWindow : Window
     {
         var menu = new ContextMenu { PlacementTarget = TitleBar };
         AddMenu(menu, "新建任务…", AddTask);
+        AddMenu(menu, "番茄钟…", () => _manager.RequestPomodoro());
         AddMenu(menu, "外观…", () => OpenAppearance());
         AddMenu(menu, "重命名清单…", () =>
         {
@@ -684,6 +690,7 @@ public partial class TodoBoardWindow : Window
     {
         var menu = new ContextMenu { PlacementTarget = MoreButton };
         AddMenu(menu, "新建任务…", AddTask);
+        AddMenu(menu, "番茄钟…", () => _manager.RequestPomodoro());
         AddMenu(menu, "外观…", () => OpenAppearance());
         AddCheckedMenu(menu, "高度自适应（按任务数）", _model.AutoHeight, () =>
         {

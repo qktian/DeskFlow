@@ -65,6 +65,8 @@ public sealed class GeneralSettings
 
 public sealed class AppConfig
 {
+    public PomodoroData Pomodoro { get; set; } = new();
+
     public int Version { get; set; } = 1;
 
     public GeneralSettings General { get; set; } = new();

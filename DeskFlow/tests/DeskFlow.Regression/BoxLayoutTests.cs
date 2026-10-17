@@ -59,31 +59,44 @@ internal static partial class Program
                     Require(Cards(0).Length == 6);
                 }
             });
-            Check("Box: a full row has equal left/right margins", () =>
+            Check("Box: a full row keeps fixed card width", () =>
             {
                 ResizeViewport(6 * cell + 21);
                 var cards = Cards(0);
                 Require(cards.Length == 6);
-                var left = Bounds(cards[0]).Left;
-                var right = window.ActualWidth - Bounds(cards[^1]).Right;
-                Require(Math.Abs(left - right) <= tolerance, $"Margins differ: left={left}, right={right}");
-                foreach (var card in cards) Require(Math.Abs(card.ActualWidth - cards[0].ActualWidth) <= tolerance);
+                foreach (var card in cards)
+                {
+                    Require(Math.Abs(card.ActualWidth - window.ItemWidth) <= tolerance,
+                        $"Card width changed: {card.ActualWidth} instead of {window.ItemWidth}");
+                    Require(Math.Abs(card.ActualHeight - window.ItemHeight) <= tolerance,
+                        $"Card height changed: {card.ActualHeight} instead of {window.ItemHeight}");
+                }
             });
-            Check("Box: partial last row retains the first column's position and width", () =>
+            Check("Box: partial last row retains the first column's position and fixed size", () =>
             {
                 ResizeViewport(6 * cell + 21);
                 var first = Bounds(Cards(0)[0]);
                 var tail = Cards(list.Items.Count - 1);
                 Require(tail.Length == 1);
                 var last = Bounds(tail[0]);
-                Require(Math.Abs(first.Left - last.Left) <= tolerance && Math.Abs(first.Width - last.Width) <= tolerance);
+                Require(Math.Abs(first.Left - last.Left) <= tolerance
+                        && Math.Abs(first.Width - last.Width) <= tolerance
+                        && Math.Abs(first.Height - last.Height) <= tolerance);
             });
             Check("Box: only crossing the actual width boundary changes the row count", () =>
             {
-                ResizeViewport(6 * cell - 2);
+                ResizeViewport(6 * cell - 4);
                 Require(window.ItemColumns == 5 && Cards(0).Length == 5);
-                ResizeViewport(6 * cell + 2);
+                ResizeViewport(6 * cell);
                 Require(window.ItemColumns == 6 && Cards(0).Length == 6);
+            });
+            Check("Box: a 237-wide box still lays out three fixed cards", () =>
+            {
+                ResizeViewport(3 * cell + 1);
+                Require(window.ItemColumns == 3, $"Expected three columns at viewport {scroll.ViewportWidth}");
+                Require(Cards(0).Length == 3);
+                foreach (var card in Cards(0))
+                    Require(Math.Abs(card.ActualWidth - window.ItemWidth) <= tolerance);
             });
             Check("Box: resizing within one column count keeps virtualized row objects", () =>
             {

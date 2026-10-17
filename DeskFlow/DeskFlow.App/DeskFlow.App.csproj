@@ -10,6 +10,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>DeskFlow.App</RootNamespace>
     <AssemblyName>DeskFlow</AssemblyName>
+    <Version>1.2.0</Version>
+    <InformationalVersion>1.2.0-pomodoro-statistics</InformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\DeskFlow.ico</ApplicationIcon>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
@@ -18,6 +20,10 @@
   <ItemGroup>
     <ProjectReference Include="..\DeskFlow.Core\DeskFlow.Core.csproj" />
     <ProjectReference Include="..\DeskFlow.Shell\DeskFlow.Shell.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Sounds\mission-completed.wav" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- 同时启用 WPF 与 WinForms 时两者命名空间会互相冲突（Application / Color / MouseEventArgs 等），

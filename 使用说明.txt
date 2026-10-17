@@ -1,0 +1,20 @@
+DeskFlow 1.2.0 · 番茄钟统计版
+
+运行程序：DeskFlow\publish\DeskFlow.exe
+完整源码：DeskFlow\（原有解决方案）
+重新编译：DeskFlow\Build.cmd（Windows + .NET 8 SDK）
+
+升级使用：
+1. 先从旧版托盘菜单选择“退出”。
+2. 将本包解压到原工程目录，覆盖对应文件。
+3. 运行 DeskFlow\publish\DeskFlow.exe。
+
+本次程序包含 Windows x64 .NET 桌面运行时，无需另外安装 .NET。
+用户配置继续使用 %AppData%\DeskFlow\config.json，原有盒子和待办会保留。
+首次升级会显示番茄钟面板；也可通过托盘、软件设置或待办右键菜单打开。
+统计入口：番茄钟面板 →“统计”（精简模式先点“展开”）。
+支持每日趋势、时长与完成率、事项分布、今日目标、连续专注及统计导出。
+详细说明：DeskFlow\docs\番茄钟统计.md。
+
+验证情况：32 项番茄钟及统计回归检查通过，Windows x64 发布成功。
+当前环境无法进行 Windows 界面实机验收。

@@ -91,7 +91,7 @@ public partial class BoxWindow : Window
         }
     }
 
-    /// <summary>条目外框的基准宽度；实际宽度由整行等宽列分配。</summary>
+    /// <summary>条目外框的固定宽度；列数按此宽度计算。</summary>
     public double ItemWidth => IconSize + 36;
 
     /// <summary>条目的四周间距，同时用于列数计算，避免与 XAML 不一致。</summary>
@@ -310,12 +310,14 @@ public partial class BoxWindow : Window
     // Only realized rows request shell icons; resizing changes the number of columns.
     private void RebuildVisibleRows()
     {
-        // 首次布局前按明确的边框/边距估算；布局后使用 ScrollViewer 的真实视口。
-        // 隐藏的滚动条不占宽度，不能再额外扣除 16 DIP。
-        var width = _itemsViewportWidth > 0 ? _itemsViewportWidth : Math.Max(0,
-            Width - Frame.BorderThickness.Left - Frame.BorderThickness.Right
-            - ItemsScroll.Margin.Left - ItemsScroll.Margin.Right
-            - ItemsScroll.Padding.Left - ItemsScroll.Padding.Right);
+        // 使用列表控件的实际布局宽度。ScrollViewer.ViewportWidth 可能扣除隐藏滚动条
+        // 的预留空间，窄盒子会因此在刚好能容纳 3 列时提前换成 2 列。
+        var width = ItemsScroll.ActualWidth > 0
+            ? ItemsScroll.ActualWidth
+            : Math.Max(0,
+                Width - Frame.BorderThickness.Left - Frame.BorderThickness.Right
+                - ItemsScroll.Margin.Left - ItemsScroll.Margin.Right
+                - ItemsScroll.Padding.Left - ItemsScroll.Padding.Right);
         ItemColumns = CalculateItemColumns(width);
         ItemsScroll.ItemsSource = _viewItems.Chunk(ItemColumns).ToList();
     }
@@ -331,7 +333,7 @@ public partial class BoxWindow : Window
         if (e.OriginalSource is not ScrollViewer || !double.IsFinite(e.ViewportWidth) || e.ViewportWidth <= 0)
             return;
 
-        _itemsViewportWidth = e.ViewportWidth;
+        _itemsViewportWidth = ItemsScroll.ActualWidth > 0 ? ItemsScroll.ActualWidth : e.ViewportWidth;
         // 同一列数内仅由布局系统均分宽度，不重建条目或重新触发图标加载。
         if (CalculateItemColumns(_itemsViewportWidth) != ItemColumns) RebuildVisibleRows();
     }

@@ -29,6 +29,8 @@ public sealed class TodoManager : IDisposable
 
     /// <summary>面板 / 托盘请求打开「待办历史」窗口。</summary>
     public event EventHandler? HistoryRequested;
+    public event Action<TodoItemModel?>? PomodoroRequested;
+    public void RequestPomodoro(TodoItemModel? task = null) => PomodoroRequested?.Invoke(task);
 
     public void RequestHistory() => HistoryRequested?.Invoke(this, EventArgs.Empty);
 

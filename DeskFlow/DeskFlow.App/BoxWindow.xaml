@@ -125,7 +125,8 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <Border HorizontalAlignment="Stretch"
+                            <Border Width="{Binding ItemWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    HorizontalAlignment="Left"
                                     Height="{Binding ItemHeight, RelativeSource={RelativeSource AncestorType=Window}}"
                                     Margin="{Binding ItemMargin, RelativeSource={RelativeSource AncestorType=Window}}"
                                     CornerRadius="8"

@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.Regression", "test
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.LayoutRegression", "tests\DeskFlow.LayoutRegression\DeskFlow.LayoutRegression.csproj", "{D1996F63-2D6F-4936-A8E0-93EECA561D74}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeskFlow.PomodoroRegression", "tests\DeskFlow.PomodoroRegression\DeskFlow.PomodoroRegression.csproj", "{56F04626-BEBF-41F6-AEA9-B81A72811501}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,6 +26,10 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{56F04626-BEBF-41F6-AEA9-B81A72811501}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{56F04626-BEBF-41F6-AEA9-B81A72811501}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{56F04626-BEBF-41F6-AEA9-B81A72811501}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{56F04626-BEBF-41F6-AEA9-B81A72811501}.Release|Any CPU.Build.0 = Release|Any CPU
 		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F8D13B5E-E24F-4BCE-BAE6-8C720B41785D}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -46,6 +52,7 @@ Global
 		{D1996F63-2D6F-4936-A8E0-93EECA561D74}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
+		{56F04626-BEBF-41F6-AEA9-B81A72811501} = {9695913C-3014-4CC5-81A2-28396073D3D3}
 		{B5A01AFA-5EA7-4AD5-8193-5C2BDD06D8E6} = {9695913C-3014-4CC5-81A2-28396073D3D3}
 		{D1996F63-2D6F-4936-A8E0-93EECA561D74} = {9695913C-3014-4CC5-81A2-28396073D3D3}
 	EndGlobalSection

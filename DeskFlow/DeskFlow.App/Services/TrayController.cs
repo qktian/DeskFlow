@@ -12,18 +12,23 @@ public sealed class TrayController : IDisposable
 {
     private readonly BoxManager _manager;
     private readonly TodoManager _todoManager;
+    private readonly PomodoroManager _pomodoro;
+    private readonly ToolStripMenuItem _pomodoroToggle = new("开始专注");
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _restoreSnapshotItem = new("恢复快照");
     private readonly ToolStripMenuItem _undoOrganizeItem = new("撤销上次整理");
     private bool _disposed;
+    private bool _pomodoroBalloon;
+    private string _lastTip = "";
 
-    public TrayController(BoxManager manager, TodoManager todoManager)
+    public TrayController(BoxManager manager, TodoManager todoManager, PomodoroManager pomodoro)
     {
         _manager = manager;
         _todoManager = todoManager;
+        _pomodoro = pomodoro;
 
         var menu = BuildMenu();
-        menu.Opening += (_, _) => { RebuildRestoreSnapshotMenu(); _undoOrganizeItem.Enabled = _manager.CanUndoOrganize; };
+        menu.Opening += (_, _) => { RebuildRestoreSnapshotMenu(); RefreshPomodoroMenu(); _undoOrganizeItem.Enabled = _manager.CanUndoOrganize; };
 
         _notifyIcon = new NotifyIcon
         {
@@ -35,6 +40,8 @@ public sealed class TrayController : IDisposable
 
         _notifyIcon.MouseClick += OnMouseClick;
         _notifyIcon.DoubleClick += (_, _) => OpenSettings();
+        _notifyIcon.BalloonTipClicked += (_, _) => { if (_pomodoroBalloon) _pomodoro.Show(); };
+        _pomodoro.Refreshed += RefreshPomodoroTooltip;
     }
 
     public event EventHandler? SettingsRequested;
@@ -51,7 +58,26 @@ public sealed class TrayController : IDisposable
 
     public void ShowBalloon(string title, string message)
     {
+        _pomodoroBalloon = false;
         _notifyIcon.ShowBalloonTip(3000, title, message, ToolTipIcon.Info);
+    }
+
+    public void ShowPomodoroBalloon(string title, string message)
+    {
+        _pomodoroBalloon = true;
+        _notifyIcon.ShowBalloonTip(5000, title, message + " 点击打开番茄钟。", ToolTipIcon.Info);
+    }
+
+    private void RefreshPomodoroTooltip()
+    {
+        if (_disposed) return;
+        var session = _pomodoro.Engine.Session;
+        var seconds = (int)Math.Ceiling(session.RemainingSeconds);
+        var state = session.Status == DeskFlow.Core.Models.PomodoroStatus.Running ? "进行中" :
+            session.Status == DeskFlow.Core.Models.PomodoroStatus.Paused ? "已暂停" : "待开始";
+        var tip = $"DeskFlow · {PomodoroEngine.Label(session.Phase)} {seconds / 60:00}:{seconds % 60:00} · {state}";
+        if (tip == _lastTip) return;
+        _lastTip = tip; _notifyIcon.Text = tip;
     }
 
     private ContextMenuStrip BuildMenu()
@@ -88,6 +114,9 @@ public sealed class TrayController : IDisposable
             }
         }));
 
+        menu.Items.Add(CreateItem("番茄钟…", (_, _) => _pomodoro.Show()));
+        _pomodoroToggle.Click += (_, _) => _pomodoro.Toggle();
+        menu.Items.Add(_pomodoroToggle);
         menu.Items.Add(CreateItem("待办历史…", (_, _) => HistoryRequested?.Invoke(this, EventArgs.Empty)));
         menu.Items.Add(CreateItem("清空回收站…", (_, _) => RecycleBinActions.ShowEmptyRecycleBinDialog()));
 
@@ -122,6 +151,18 @@ public sealed class TrayController : IDisposable
         menu.Items.Add(CreateItem("退出", (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty)));
 
         return menu;
+    }
+
+    private void RefreshPomodoroMenu()
+    {
+        var session = _pomodoro.Engine.Session;
+        var seconds = (int)Math.Ceiling(session.RemainingSeconds);
+        var action = session.Status switch
+        {
+            DeskFlow.Core.Models.PomodoroStatus.Running => "暂停",
+            DeskFlow.Core.Models.PomodoroStatus.Paused => "继续", _ => "开始"
+        };
+        _pomodoroToggle.Text = $"{action}{PomodoroEngine.Label(session.Phase)} · {seconds / 60:00}:{seconds % 60:00}";
     }
 
     private static ToolStripMenuItem CreateItem(string text, EventHandler onClick)
@@ -177,6 +218,7 @@ public sealed class TrayController : IDisposable
             return;
         }
 
+        _pomodoro.Refreshed -= RefreshPomodoroTooltip;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _disposed = true;

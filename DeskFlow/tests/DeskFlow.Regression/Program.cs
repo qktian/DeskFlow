@@ -41,6 +41,12 @@ internal static partial class Program
                 Console.WriteLine($"{_checks - _failures}/{_checks} box-layout checks passed");
                 return _failures == 0 ? 0 : 1;
             }
+            if (args.FirstOrDefault() == "--todo-effect")
+            {
+                TodoEffect();
+                Console.WriteLine($"{_checks - _failures}/{_checks} todo-effect checks passed");
+                return _failures == 0 ? 0 : 1;
+            }
             Icons();
             Rules();
             Files();

@@ -308,6 +308,15 @@
             </TabItem>
 
             <!-- 关于 -->
+            <TabItem Header="番茄钟">
+                <StackPanel Margin="20">
+                    <TextBlock Text="专注一件事，按时休息" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                    <TextBlock Text="默认专注 25 分钟、短休息 5 分钟，每完成 4 个番茄后长休息 15 分钟。" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock Text="支持暂停继续、自定义时长、自动循环、声音与通知、每日目标和历史导出。在待办任务的右键菜单中，可直接选择“用番茄钟专注此任务”。" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock Text="关闭番茄钟面板后计时继续；锁屏、休眠或退出软件时暂停并保存进度。" TextWrapping="Wrap" Margin="0,0,0,18"/>
+                    <Button Content="打开番茄钟" HorizontalAlignment="Left" Padding="20,10" Click="OpenPomodoro_OnClick"/>
+                </StackPanel>
+            </TabItem>
             <TabItem Header="关于">
                 <StackPanel Margin="14,14">
                     <TextBlock Text="DeskFlow" FontSize="20" FontWeight="SemiBold" Foreground="#2C2C2A" />

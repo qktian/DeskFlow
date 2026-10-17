@@ -128,6 +128,8 @@ public static class ConfigService
     /// <summary>补齐缺失字段，保证升级后配置可用。</summary>
     private static void EnsureIntegrity(AppConfig config)
     {
+        config.Pomodoro ??= new PomodoroData();
+        config.Pomodoro.Normalize();
         config.Boxes ??= new List<BoxModel>();
         config.TodoBoards ??= new List<TodoBoardModel>();
         config.Snapshots ??= new List<BoxSnapshot>();

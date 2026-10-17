@@ -28,6 +28,7 @@ public partial class App : Application
     private AppConfig _config = null!;
     private BoxManager _manager = null!;
     private TodoManager _todoManager = null!;
+    private PomodoroManager _pomodoro = null!;
     private SearchWindow? _searchWindow;
     private TrayController _tray = null!;
     private DesktopWatcher _watcher = null!;
@@ -46,7 +47,7 @@ public partial class App : Application
 
         if (e.Args.Length == 2 && e.Args[0] == DesktopRecovery.WatchArgument)
         {
-            Shutdown(DesktopRecovery.RunGuardian(e.Args[1]));
+            ShutdownWithCheckpoint(DesktopRecovery.RunGuardian(e.Args[1]));
             return;
         }
 
@@ -71,13 +72,13 @@ public partial class App : Application
                 }
             }
 
-            Shutdown();
+            ShutdownWithCheckpoint();
             return;
         }
 
         if (isExitRequest)
         {
-            Shutdown();
+            ShutdownWithCheckpoint();
             return;
         }
 
@@ -87,7 +88,7 @@ public partial class App : Application
             var restored = recovery.Restore();
             DiagnosticLog.Info("Recovery", $"Manual recovery result: {restored}");
             if (!restored) MessageBox.Show("Explorer 尚未就绪。请等待资源管理器恢复后，再运行 --recover-desktop。", "DeskFlow");
-            Shutdown(restored ? 0 : 1);
+            ShutdownWithCheckpoint(restored ? 0 : 1);
             return;
         }
 
@@ -111,7 +112,7 @@ public partial class App : Application
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             args.Handled = true;
-            Shutdown(1);
+            ShutdownWithCheckpoint(1);
         };
 
         _config = ConfigService.Load();
@@ -139,11 +140,15 @@ public partial class App : Application
         _todoManager.Initialize();
         _manager.LayoutRestored += (_, _) => _todoManager.RebuildFromConfig();
 
-        _tray = new TrayController(_manager, _todoManager);
+        _pomodoro = new PomodoroManager(_config);
+        _todoManager.PomodoroRequested += task => _pomodoro.Show(task);
+        _tray = new TrayController(_manager, _todoManager, _pomodoro);
+        _pomodoro.Notification += (title, message) => _tray.ShowPomodoroBalloon(title, message);
+        _pomodoro.Initialize();
         _tray.SettingsRequested += (_, _) => OpenSettings();
         _tray.HistoryRequested += (_, _) => OpenHistory();
         _tray.SearchRequested += (_, _) => OpenSearch();
-        _tray.ExitRequested += (_, _) => Shutdown();
+        _tray.ExitRequested += (_, _) => ShutdownWithCheckpoint();
         _tray.SystemIconsVisibilityChanged += (_, _) => ApplyDesktopIcons();
         _tray.RestoreDesktopRequested += (_, _) => RestoreDesktopManually();
         _recovery = new DesktopRecovery();
@@ -167,7 +172,7 @@ public partial class App : Application
         _exitSignal = new EventWaitHandle(false, EventResetMode.ManualReset, ExitSignalName);
         _exitSignalRegistration = ThreadPool.RegisterWaitForSingleObject(
             _exitSignal,
-            (_, _) => Dispatcher.InvokeAsync(() => Shutdown()),
+            (_, _) => Dispatcher.InvokeAsync(() => ShutdownWithCheckpoint()),
             null,
             Timeout.Infinite,
             executeOnlyOnce: true);
@@ -182,10 +187,22 @@ public partial class App : Application
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
-                Shutdown(0);
+                ShutdownWithCheckpoint(0);
             };
             timer.Start();
         }
+    }
+
+    private void ShutdownWithCheckpoint(int exitCode = 0)
+    {
+        _pomodoro?.PrepareForExit();
+        Shutdown(exitCode);
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        _pomodoro?.PrepareForExit();
+        base.OnSessionEnding(e);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -199,6 +216,7 @@ public partial class App : Application
             ReliableCleanup.Run(
                 ("Stop icon guard", StopIconGuard),
                 ("Restore desktop", () => _recovery?.Restore()),
+                ("Pomodoro", () => _pomodoro?.Dispose()),
                 ("Save configuration", () => _manager?.Save()),
                 ("Mouse hook", () => _desktopHook?.Dispose()),
                 ("Hotkeys", () => _hotkeys?.Dispose()),
@@ -397,6 +415,8 @@ public partial class App : Application
         _settingsWindow = new SettingsWindow(_config, _manager);
         _settingsWindow.ValidateHotkeys = TryApplyHotkeys;
         _settingsWindow.RebuildTodos = _todoManager.RebuildFromConfig;
+        _settingsWindow.OpenPomodoro = () => _pomodoro.Show();
+        _settingsWindow.ReloadPomodoro = _pomodoro.ReloadFromConfig;
         _settingsWindow.SettingsApplied += (_, _) =>
         {
             ApplyHotkeys();
@@ -437,6 +457,7 @@ public partial class App : Application
         {
             _manager.EnsureOnScreen();
             _todoManager.EnsureOnScreen();
+            _pomodoro.EnsureOnScreen();
             _manager.Save();
         });
     }
@@ -459,6 +480,7 @@ public partial class App : Application
             Dispatcher.Invoke(() => ReliableCleanup.Run(
                 ("Stop icon guard", StopIconGuard),
                 ("Session desktop restore", () => _recovery?.Restore()),
+                ("Pomodoro checkpoint", () => _pomodoro?.CheckpointForExit()),
                 ("Session save", () => _manager?.Save())),
                 DispatcherPriority.Send, CancellationToken.None, TimeSpan.FromSeconds(3));
         }

@@ -218,5 +218,6 @@ public partial class TodoCalendarWindow : Window
         _task.CheckIns[key] = !done;
         _manager.Save();
         Render();
+        if (!done) MissionCompleteEffect.Play(this);
     }
 }

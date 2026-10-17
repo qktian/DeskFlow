@@ -621,6 +621,9 @@ public partial class SettingsWindow : Window
 
     public Func<string, string, string?>? ValidateHotkeys { get; set; }
     public Action? RebuildTodos { get; set; }
+    public Action? OpenPomodoro { get; set; }
+    public Action? ReloadPomodoro { get; set; }
+    private void OpenPomodoro_OnClick(object sender, RoutedEventArgs e) => OpenPomodoro?.Invoke();
 
     // An explicit recovery request must not be undone by cancelling an already-open settings window.
     public void KeepDesktopIconsVisible()
@@ -788,9 +791,11 @@ public partial class SettingsWindow : Window
         _liveConfig.General.CopyFrom(restored.General);
         _liveConfig.Boxes = restored.Boxes;
         _liveConfig.TodoBoards = restored.TodoBoards;
+        _liveConfig.Pomodoro = restored.Pomodoro;
         _liveConfig.Snapshots = restored.Snapshots;
         _liveConfig.Rules = restored.Rules;
         _liveConfig.ExcludedPaths = restored.ExcludedPaths;
+        ReloadPomodoro?.Invoke();
         _manager.Initialize();
         RebuildTodos?.Invoke();
         SettingsApplied?.Invoke(this, EventArgs.Empty);
